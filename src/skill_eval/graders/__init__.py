@@ -222,10 +222,22 @@ class DeterministicGrader:
 class LLMGrader:
     def __init__(self, model: str = "gpt-4o", base_url: str | None = None):
         self.model = model
-        self.client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY", ""),
-            base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
-        )
+        self.base_url = base_url
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                raise OpenAIError(
+                    "OPENAI_API_KEY not set. Set it via environment variable or pass grader_base_url."
+                )
+            self._client = OpenAI(
+                api_key=api_key,
+                base_url=self.base_url or os.environ.get("OPENAI_BASE_URL"),
+            )
+        return self._client
 
     def grade(
         self,
