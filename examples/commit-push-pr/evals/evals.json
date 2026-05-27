@@ -1,0 +1,58 @@
+{
+  "skill_name": "commit-push-pr",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Use the $commit-push-pr skill. I have some changes staged, please create a branch, commit, push and open a PR.",
+      "expected_output": "A new branch is created, changes are committed with a clear message, pushed to remote, and a PR is created targeting the base branch. The PR URL is reported back.",
+      "files": [],
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "The branch was pushed to remote",
+        "A pull request was created or the PR URL is mentioned in the output"
+      ]
+    },
+    {
+      "id": "implicit-invoke",
+      "prompt": "I've made some changes to fix the login bug. Can you get this into a PR for me?",
+      "expected_output": "The skill triggers automatically, creates a fix branch, commits the changes, pushes, and opens a PR.",
+      "files": [],
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "A pull request was created or the PR URL is mentioned in the output"
+      ]
+    },
+    {
+      "id": "contextual-invoke",
+      "prompt": "I just finished implementing the new search feature in src/search.py and tests/test_search.py. Push this up and make a PR so my team can review it.",
+      "expected_output": "The skill triggers, creates a feature branch for the search feature, commits the specified files, pushes, and creates a PR.",
+      "files": [],
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "A pull request was created or the PR URL is mentioned in the output"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "Show me the git log for the last 10 commits",
+      "expected_output": "The skill should NOT trigger. The agent should simply run git log and show the output.",
+      "files": [],
+      "should_trigger": false,
+      "assertions": [
+        "The output contains git log entries"
+      ]
+    },
+    {
+      "id": "no-changes",
+      "prompt": "Use the $commit-push-pr skill to commit and push my changes.",
+      "expected_output": "The skill detects there are no uncommitted changes and informs the user, stopping gracefully.",
+      "files": [],
+      "assertions": [
+        "The output mentions there are no changes to commit or the working tree is clean"
+      ]
+    }
+  ]
+}
