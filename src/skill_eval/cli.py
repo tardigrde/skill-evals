@@ -39,6 +39,7 @@ def run(
     baseline: bool = typer.Option(True, "--baseline/--no-baseline", help="Run without-skill baseline"),
     grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
+    source_repo: Optional[str] = typer.Option(None, "--source-repo", help="Git repo URL to clone as workspace (instead of fresh git init)"),
 ):
     """Run skill evaluations."""
     if not skill.exists():
@@ -65,6 +66,7 @@ def run(
         with_baseline=baseline,
         grader_model=grader_model,
         grader_base_url=grader_base_url,
+        source_repo=source_repo,
     )
 
     result_dir = runner.run(iteration)

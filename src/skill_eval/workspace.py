@@ -11,17 +11,21 @@ console = Console()
 
 
 class WorkspaceManager:
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(self, base_dir: Path | None = None, source_repo: str | None = None):
         self.base_dir = base_dir or Path(tempfile.gettempdir())
+        self.source_repo = source_repo
         self.workspaces: list[Path] = []
 
     def create_workspace(self, name: str, fixture_files: dict[str, Path] | None = None) -> Path:
         workspace = self.base_dir / f"skill-eval-{name}"
         if workspace.exists():
             shutil.rmtree(workspace)
-        workspace.mkdir(parents=True, exist_ok=True)
 
-        self._init_git_repo(workspace)
+        if self.source_repo:
+            self._clone_repo(workspace)
+        else:
+            workspace.mkdir(parents=True, exist_ok=True)
+            self._init_git_repo(workspace)
 
         if fixture_files:
             for rel_path, src_path in fixture_files.items():
@@ -34,6 +38,25 @@ class WorkspaceManager:
 
         self.workspaces.append(workspace)
         return workspace
+
+    def _clone_repo(self, workspace: Path) -> None:
+        subprocess.run(
+            ["git", "clone", self.source_repo, str(workspace)],
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "eval@skill-eval.local"],
+            cwd=workspace,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Skill Eval"],
+            cwd=workspace,
+            capture_output=True,
+            check=True,
+        )
 
     def _init_git_repo(self, workspace: Path) -> None:
         subprocess.run(

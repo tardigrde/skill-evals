@@ -41,6 +41,7 @@ class EvalRunner:
         grader_model: str = "deepseek/deepseek-v4-flash",
         grader_base_url: Optional[str] = None,
         agent_models: Optional[dict[AgentType, str]] = None,
+        source_repo: Optional[str] = None,
     ):
         self.skill_path = skill_path
         self.evals_path = evals_path
@@ -51,10 +52,11 @@ class EvalRunner:
         self.grader_model = grader_model
         self.grader_base_url = grader_base_url
         self.agent_models = agent_models or {}
+        self.source_repo = source_repo
 
         self.suite = self._load_suite()
         self.skill_installer = SkillInstaller(skill_path)
-        self.workspace_mgr = WorkspaceManager(workspace_base)
+        self.workspace_mgr = WorkspaceManager(workspace_base, source_repo=source_repo)
         self.llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url) if grader_model else None
 
     def _load_suite(self) -> EvalSuite:

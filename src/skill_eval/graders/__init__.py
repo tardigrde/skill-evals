@@ -28,10 +28,10 @@ class DeterministicGrader:
             return self._check_git_commit(assertion, output_dir, workspace)
 
         if "push" in assertion_lower and ("remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower):
-            return self._check_pushed(assertion, output_dir, agent_output)
+            return self._check_pushed(assertion, output_dir, agent_output, workspace)
 
         if "pr" in assertion_lower or "pull request" in assertion_lower:
-            return self._check_pr_created(assertion, output_dir, agent_output)
+            return self._check_pr_created(assertion, output_dir, agent_output, workspace)
 
         if "file exists" in assertion_lower or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])):
             return self._check_file_exists(assertion, output_dir, workspace)
@@ -159,19 +159,21 @@ class DeterministicGrader:
 
         try:
             result = subprocess.run(
-                ["git", "branch", "--list"],
+                ["git", "branch", "-a"],
                 cwd=ws,
                 capture_output=True,
                 text=True,
             )
             branches = result.stdout.strip().split("\n")
             branches = [b.strip().lstrip("* ") for b in branches if b.strip()]
-
-            if len(branches) > 1 or (len(branches) == 1 and branches[0] != "main"):
+            
+            non_main_branches = [b for b in branches if "main" not in b and "HEAD" not in b]
+            
+            if non_main_branches:
                 return AssertionResult(
                     text=assertion,
                     passed=True,
-                    evidence=f"Branches found: {', '.join(branches)}",
+                    evidence=f"Branches found: {', '.join(non_main_branches[:3])}",
                 )
         except Exception as e:
             return AssertionResult(text=assertion, passed=False, evidence=f"Git error: {e}")
@@ -201,7 +203,26 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No new commits found")
 
-    def _check_pushed(self, assertion: str, output_dir: Path, agent_output: str) -> AssertionResult:
+    def _check_pushed(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+        import subprocess
+        ws = self._resolve_workspace(output_dir, workspace)
+
+        try:
+            result = subprocess.run(
+                ["git", "log", "--remotes", "--oneline", "-5"],
+                cwd=ws,
+                capture_output=True,
+                text=True,
+            )
+            if result.stdout.strip():
+                return AssertionResult(
+                    text=assertion,
+                    passed=True,
+                    evidence=f"Remote branches have commits: {result.stdout.strip()[:100]}",
+                )
+        except Exception:
+            pass
+
         push_indicators = ["push", "pushed", "git push", "origin"]
         output_lower = agent_output.lower()
 
@@ -226,7 +247,26 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No push evidence found")
 
-    def _check_pr_created(self, assertion: str, output_dir: Path, agent_output: str) -> AssertionResult:
+    def _check_pr_created(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+        import subprocess
+        ws = self._resolve_workspace(output_dir, workspace)
+
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "list", "--state", "open", "--limit", "5"],
+                cwd=ws,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return AssertionResult(
+                    text=assertion,
+                    passed=True,
+                    evidence=f"Open PRs found: {result.stdout.strip()[:100]}",
+                )
+        except Exception:
+            pass
+
         pr_indicators = ["pull request", "github.com/pull", "merge request"]
         output_lower = agent_output.lower()
 
