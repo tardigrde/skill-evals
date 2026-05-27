@@ -9,70 +9,105 @@ metadata:
 
 ## What I do
 
-Automate the full git workflow: update base branch, create feature branch, stage and commit changes, push, and open a PR.
+Automate the full git workflow: update base branch, create feature branch, stage and commit changes, push, and open a PR. You execute ALL steps autonomously without asking the user for confirmation.
 
 ## When to use me
 
-Use when you have uncommitted changes and want to:
-1. Ensure you're working from the latest base branch
-2. Create a properly named feature branch
-3. Commit with a clear message
-4. Push and create a PR in one flow
+Use when the user asks to commit, push, create a PR, or get changes into a branch. Trigger on phrases like:
+- "commit and push my changes"
+- "get this into a PR"
+- "push this up and make a PR"
+- "create a pull request"
+
+## IMPORTANT: Autonomous execution
+
+You MUST execute all steps below in sequence WITHOUT asking the user for confirmation. Do NOT ask "would you like me to proceed?" or "should I stage these files?". Just do it.
+
+## IMPORTANT: What counts as changes
+
+- **Changes include**: any modified tracked files AND any untracked files (new files not yet in git)
+- **Changes EXCLUDE**: agent/skill configuration directories (`.opencode/`, `.claude/`, `.codex/`)
+- When staging files, stage ALL changed files EXCEPT those in agent config directories
+- If the user mentions specific files, prioritize those but also include other changes
 
 ## Steps
 
-1. **Detect the base branch** from the remote:
-   ```
-   git remote show origin | grep 'HEAD branch' | awk '{print $NF}'
-   ```
-   Fall back to `main` if detection fails.
+Execute these steps in order. Do not stop or ask for confirmation between steps.
 
-2. **Fetch and update the base branch**:
-   ```
-   git fetch origin
-   git checkout <base-branch>
-   git pull origin <base-branch>
-   ```
+### Step 1: Detect the base branch
 
-3. **Create a new feature branch**:
-   - Generate a branch name from the changes or user request
-   - Format: `feature/<descriptive-name>` or `fix/<descriptive-name>`
-   ```
-   git checkout -b <branch-name>
-   ```
+```bash
+git remote show origin | grep 'HEAD branch' | awk '{print $NF}'
+```
+Fall back to `main` if detection fails or no remote exists.
 
-4. **Stage and commit changes**:
-   - Show the user what will be committed (`git status`, `git diff --stat`)
-   - Stage relevant files (prefer explicit staging over `git add .`)
-   - Write a clear commit message following conventional commits if the repo uses them
-   ```
-   git add <files>
-   git commit -m "<type>: <description>"
-   ```
+### Step 2: Fetch and update the base branch
 
-5. **Push to remote**:
-   ```
-   git push -u origin <branch-name>
-   ```
+```bash
+git fetch origin
+git checkout <base-branch>
+git pull origin <base-branch>
+```
 
-6. **Create a pull request**:
-   ```
-   gh pr create --base <base-branch> --title "<PR title>" --body "<PR description>"
-   ```
-   - The PR title should match the commit message
-   - The PR body should summarize the changes and reference any related issues
+### Step 3: Identify changes to commit
+
+Run `git status` to find all modified and untracked files. Filter out agent config directories:
+- Ignore anything under `.opencode/`
+- Ignore anything under `.claude/`
+- Ignore anything under `.codex/`
+
+If after filtering there are NO changes (no modified files, no untracked files outside agent config dirs), then inform the user "No changes to commit" and STOP. Do not proceed.
+
+### Step 4: Create a new feature branch
+
+Generate a descriptive branch name from the changes or user request:
+- Use `feature/<descriptive-name>` for new features
+- Use `fix/<descriptive-name>` for bug fixes
+
+```bash
+git checkout -b <branch-name>
+```
+
+### Step 5: Stage and commit changes
+
+Stage all changed files (modified + untracked), excluding agent config directories:
+
+```bash
+git add <files>
+git commit -m "<type>: <description>"
+```
+
+- Use conventional commit format: `feat:`, `fix:`, `chore:`, etc.
+- Write a clear, descriptive commit message based on the changes
+
+### Step 6: Push to remote
+
+```bash
+git push -u origin <branch-name>
+```
+
+### Step 7: Create a pull request
+
+```bash
+gh pr create --base <base-branch> --title "<PR title>" --body "<PR description>"
+```
+
+- The PR title should match the commit message
+- The PR body should summarize the changes
+- Report the PR URL back to the user
 
 ## Definition of done
 
-- A new branch exists based on the latest base branch
-- Changes are committed with a descriptive message
-- Branch is pushed to the remote
-- A PR is created targeting the base branch
-- Report the PR URL back to the user
+All of these must be true:
+- A new feature branch was created based on the latest base branch
+- All changes (excluding agent config) are committed with a descriptive message
+- Branch is pushed to the remote with `git push`
+- A PR is created targeting the base branch via `gh pr create`
+- The PR URL is reported back to the user
 
 ## Error handling
 
-- If there are no changes to commit, inform the user and stop
+- If there are no changes to commit (after excluding agent config dirs), inform the user and stop
 - If `gh` CLI is not available, provide the push command and instruct the user to create the PR manually
 - If push fails due to conflicts, inform the user and suggest resolution steps
 - If the remote doesn't exist, inform the user and stop after the commit

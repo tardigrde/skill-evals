@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +42,7 @@ def run(
     grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
     source_repo: Optional[str] = typer.Option(None, "--source-repo", help="Git repo URL to clone as workspace (instead of fresh git init)"),
+    auto_cleanup: bool = typer.Option(False, "--cleanup", help="Auto-cleanup PRs, branches, and workspaces after run"),
 ):
     """Run skill evaluations."""
     if not skill.exists():
@@ -71,6 +74,84 @@ def run(
 
     result_dir = runner.run(iteration)
     console.print(f"\n[bold green]Done! Results in: {result_dir}[/bold green]")
+
+    if auto_cleanup:
+        console.print()
+        console.print("[yellow]Running cleanup...[/yellow]")
+        if source_repo:
+            _cleanup_source_repo(source_repo)
+        _cleanup_workspaces(workspace)
+        console.print("[green]Cleanup complete![/green]")
+
+
+def _cleanup_source_repo(source_repo: str) -> None:
+    repo_slug = source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git")
+
+    result = subprocess.run(
+        ["gh", "pr", "list", "--repo", repo_slug, "--state", "open", "--json", "number"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        prs = json.loads(result.stdout)
+        for pr in prs:
+            num = pr["number"]
+            subprocess.run(
+                ["gh", "pr", "close", str(num), "--repo", repo_slug],
+                capture_output=True,
+            )
+            console.print(f"  [dim]Closed PR #{num}[/dim]")
+
+    result = subprocess.run(
+        ["gh", "api", f"repos/{repo_slug}/branches", "--jq", ".[].name"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        default_result = subprocess.run(
+            ["gh", "api", f"repos/{repo_slug}", "--jq", ".default_branch"],
+            capture_output=True, text=True,
+        )
+        default_branch = default_result.stdout.strip() if default_result.returncode == 0 else "main"
+        for branch in result.stdout.strip().split("\n"):
+            branch = branch.strip()
+            if branch and branch != default_branch:
+                subprocess.run(
+                    ["gh", "api", "-X", "DELETE", f"repos/{repo_slug}/git/refs/heads/{branch}"],
+                    capture_output=True,
+                )
+                console.print(f"  [dim]Deleted branch {branch}[/dim]")
+
+
+def _cleanup_workspaces(workspace_base: Path) -> None:
+    for ws_dir in workspace_base.glob("skill-eval-*"):
+        if ws_dir.is_dir():
+            shutil.rmtree(ws_dir)
+            console.print(f"  [dim]Removed {ws_dir.name}[/dim]")
+
+
+@app.command()
+def cleanup(
+    workspace: Path = typer.Option(
+        Path.cwd() / "eval-workspace",
+        "--workspace", "-w",
+        help="Base directory for eval workspace",
+    ),
+    source_repo: Optional[str] = typer.Option(
+        None, "--source-repo",
+        help="Git repo URL to clean up PRs/branches on",
+    ),
+):
+    """Clean up eval artifacts: close PRs, delete branches, remove workspaces."""
+    console.print("[yellow]Cleaning up eval artifacts...[/yellow]")
+
+    if source_repo:
+        console.print(f"[cyan]Cleaning source repo: {source_repo}[/cyan]")
+        _cleanup_source_repo(source_repo)
+
+    if workspace.exists():
+        console.print(f"[cyan]Cleaning workspaces in: {workspace}[/cyan]")
+        _cleanup_workspaces(workspace)
+
+    console.print("[green]Cleanup complete![/green]")
 
 
 @app.command()

@@ -5,7 +5,7 @@
       "id": "explicit-invoke",
       "prompt": "Use the $commit-push-pr skill. I have some changes staged, please create a branch, commit, push and open a PR.",
       "expected_output": "A new branch is created, changes are committed with a clear message, pushed to remote, and a PR is created targeting the base branch. The PR URL is reported back.",
-      "files": ["evals/files/sample_change.py"],
+      "files": ["files/sample_change.py"],
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
@@ -17,7 +17,7 @@
       "id": "implicit-invoke",
       "prompt": "I've made some changes to fix the login bug. Can you get this into a PR for me?",
       "expected_output": "The skill triggers automatically, creates a fix branch, commits the changes, pushes, and opens a PR.",
-      "files": ["evals/files/sample_change.py"],
+      "files": ["files/sample_change.py"],
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
@@ -28,7 +28,7 @@
       "id": "contextual-invoke",
       "prompt": "I just finished implementing the new search feature in sample_change.py. Push this up and make a PR so my team can review it.",
       "expected_output": "The skill triggers, creates a feature branch for the search feature, commits the specified files, pushes, and creates a PR.",
-      "files": ["evals/files/sample_change.py"],
+      "files": ["files/sample_change.py"],
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
@@ -42,7 +42,7 @@
       "files": [],
       "should_trigger": false,
       "assertions": [
-        "The output contains the word commit or Initial"
+        "The output contains the word `commit` or `Initial`"
       ]
     },
     {
