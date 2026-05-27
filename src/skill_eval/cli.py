@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+
+load_dotenv()
 
 from skill_eval.models import AgentType
 from skill_eval.runner import EvalRunner
@@ -34,7 +37,7 @@ def run(
     iteration: int = typer.Option(1, "--iteration", "-i", help="Iteration number"),
     concurrency: int = typer.Option(1, "--concurrency", "-c", help="Number of parallel eval runs"),
     baseline: bool = typer.Option(True, "--baseline/--no-baseline", help="Run without-skill baseline"),
-    grader_model: str = typer.Option("gpt-4o", "--grader-model", help="LLM model for rubric grading"),
+    grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
 ):
     """Run skill evaluations."""
@@ -71,7 +74,7 @@ def run(
 @app.command()
 def grade(
     workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to iteration workspace"),
-    grader_model: str = typer.Option("gpt-4o", "--grader-model", help="LLM model for rubric grading"),
+    grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
 ):
     """Re-grade existing eval results with updated assertions."""

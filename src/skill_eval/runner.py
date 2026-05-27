@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -37,7 +38,7 @@ class EvalRunner:
         agents: list[AgentType],
         concurrency: int = 1,
         with_baseline: bool = True,
-        grader_model: str = "gpt-4o",
+        grader_model: str = "deepseek/deepseek-v4-flash",
         grader_base_url: Optional[str] = None,
         agent_models: Optional[dict[AgentType, str]] = None,
     ):
@@ -161,13 +162,17 @@ class EvalRunner:
             output_dir,
             eval_case.expected_output,
             self.llm_grader,
+            workspace=workspace,
         )
 
         grading_path = output_dir.parent / "grading.json"
         with open(grading_path, "w") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
-        self.workspace_mgr.cleanup(workspace)
+        if os.environ.get("SKILL_EVAL_KEEP_WORKSPACE"):
+            console.print(f"  [dim]Workspace kept: {workspace}[/dim]")
+        else:
+            self.workspace_mgr.cleanup(workspace)
 
         return {
             "eval_id": eval_case.id,

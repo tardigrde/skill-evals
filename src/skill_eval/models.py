@@ -63,7 +63,7 @@ class RunConfig(BaseModel):
     agents: list[AgentType]
     concurrency: int = 1
     with_baseline: bool = True
-    grader_model: str = "gpt-4o"
+    grader_model: str = "deepseek/deepseek-v4-flash"
     grader_base_url: Optional[str] = None
 
 

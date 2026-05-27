@@ -61,6 +61,7 @@ class OpenCodeHarness(AgentHarness):
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
             "opencode", "run",
+            "--dir", str(self.workspace),
             "--format", "json",
             "--dangerously-skip-permissions",
         ]
@@ -78,19 +79,22 @@ class OpenCodeHarness(AgentHarness):
                 continue
             try:
                 event = json.loads(line)
-                if event.get("type") == "message":
-                    content = event.get("content", "")
-                    if isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                messages.append(part.get("text", ""))
-                    elif isinstance(content, str):
-                        messages.append(content)
-                elif event.get("type") == "usage":
-                    usage = event.get("usage", {})
-                    timing.input_tokens += usage.get("input_tokens", 0)
-                    timing.output_tokens += usage.get("output_tokens", 0)
-                    timing.cached_tokens += usage.get("cached_tokens", 0)
+                etype = event.get("type", "")
+
+                if etype == "text":
+                    part = event.get("part", {})
+                    text = part.get("text", "")
+                    if text:
+                        messages.append(text)
+
+                elif etype == "step_finish":
+                    part = event.get("part", {})
+                    tokens = part.get("tokens", {})
+                    timing.input_tokens += tokens.get("input", 0)
+                    timing.output_tokens += tokens.get("output", 0)
+                    cache = tokens.get("cache", {})
+                    timing.cached_tokens += cache.get("read", 0)
+
             except json.JSONDecodeError:
                 continue
 
