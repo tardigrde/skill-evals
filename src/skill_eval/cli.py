@@ -13,8 +13,8 @@ from rich.table import Table
 
 load_dotenv()
 
-from skill_eval.models import AgentType
-from skill_eval.runner import EvalRunner
+from skill_eval.models import AgentType  # noqa: E402
+from skill_eval.runner import EvalRunner  # noqa: E402
 
 app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, and Codex")
 console = Console()
@@ -39,9 +39,13 @@ def run(
     iteration: int = typer.Option(1, "--iteration", "-i", help="Iteration number"),
     concurrency: int = typer.Option(1, "--concurrency", "-c", help="Number of parallel eval runs"),
     baseline: bool = typer.Option(True, "--baseline/--no-baseline", help="Run without-skill baseline"),
-    grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
+    grader_model: str = typer.Option(
+        "deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"
+    ),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
-    source_repo: Optional[str] = typer.Option(None, "--source-repo", help="Git repo URL to clone as workspace (instead of fresh git init)"),
+    source_repo: Optional[str] = typer.Option(
+        None, "--source-repo", help="Git repo URL to clone as workspace (instead of fresh git init)"
+    ),
     auto_cleanup: bool = typer.Option(False, "--cleanup", help="Auto-cleanup PRs, branches, and workspaces after run"),
 ):
     """Run skill evaluations."""
@@ -89,7 +93,8 @@ def _cleanup_source_repo(source_repo: str) -> None:
 
     result = subprocess.run(
         ["gh", "pr", "list", "--repo", repo_slug, "--state", "open", "--json", "number"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0 and result.stdout.strip():
         prs = json.loads(result.stdout)
@@ -103,12 +108,14 @@ def _cleanup_source_repo(source_repo: str) -> None:
 
     result = subprocess.run(
         ["gh", "api", f"repos/{repo_slug}/branches", "--jq", ".[].name"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode == 0:
         default_result = subprocess.run(
             ["gh", "api", f"repos/{repo_slug}", "--jq", ".default_branch"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         default_branch = default_result.stdout.strip() if default_result.returncode == 0 else "main"
         for branch in result.stdout.strip().split("\n"):
@@ -132,11 +139,13 @@ def _cleanup_workspaces(workspace_base: Path) -> None:
 def cleanup(
     workspace: Path = typer.Option(
         Path.cwd() / "eval-workspace",
-        "--workspace", "-w",
+        "--workspace",
+        "-w",
         help="Base directory for eval workspace",
     ),
     source_repo: Optional[str] = typer.Option(
-        None, "--source-repo",
+        None,
+        "--source-repo",
         help="Git repo URL to clean up PRs/branches on",
     ),
 ):
@@ -157,7 +166,9 @@ def cleanup(
 @app.command()
 def grade(
     workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to iteration workspace"),
-    grader_model: str = typer.Option("deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"),
+    grader_model: str = typer.Option(
+        "deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"
+    ),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
 ):
     """Re-grade existing eval results with updated assertions."""
@@ -175,14 +186,15 @@ def grade(
         for config_dir in eval_dir.iterdir():
             if not config_dir.is_dir():
                 continue
-            grading_path = config_dir / "grading.json"
             output_path = config_dir / "outputs" / "output.txt"
-
             if not output_path.exists():
                 continue
 
             agent_output = output_path.read_text()
-            console.print(f"  Grading {eval_dir.name}/{config_dir.name}...")
+            grading = grade_assertions([], agent_output, config_dir / "outputs", "", llm_grader)
+            console.print(
+                f"  {eval_dir.name}/{config_dir.name}: {grading.summary.passed}/{grading.summary.total} passed"
+            )
 
     console.print("[green]Re-grading complete![/green]")
 
@@ -240,7 +252,7 @@ def report(
 
         delta = benchmark.get("delta", {})
         if delta:
-            console.print(f"\n[bold]Delta (with_skill - without_skill):[/bold]")
+            console.print("\n[bold]Delta (with_skill - without_skill):[/bold]")
             console.print(f"  Pass rate: {delta.get('pass_rate', 0):+.1%}")
             console.print(f"  Time: {delta.get('time_seconds', 0):+.1f}s")
             console.print(f"  Tokens: {delta.get('tokens', 0):+.0f}")

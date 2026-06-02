@@ -11,34 +11,47 @@ from skill_eval.models import AssertionResult, GradingResult, GradingSummary
 
 
 class DeterministicGrader:
-    def grade(self, assertions: list[str], output_dir: Path, agent_output: str, workspace: Path | None = None) -> list[AssertionResult]:
+    def grade(
+        self, assertions: list[str], output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> list[AssertionResult]:
         results = []
         for assertion in assertions:
             result = self._check_assertion(assertion, output_dir, agent_output, workspace)
             results.append(result)
         return results
 
-    def _check_assertion(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _check_assertion(
+        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> AssertionResult:
         assertion_lower = assertion.lower()
 
-        if "branch" in assertion_lower and ("created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower):
+        if "branch" in assertion_lower and (
+            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+        ):
             return self._check_git_branch(assertion, output_dir, workspace)
 
-        if "commit" in assertion_lower and ("created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower):
+        if "commit" in assertion_lower and (
+            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+        ):
             return self._check_git_commit(assertion, output_dir, workspace)
 
-        if "push" in assertion_lower and ("remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower):
+        if "push" in assertion_lower and (
+            "remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower
+        ):
             return self._check_pushed(assertion, output_dir, agent_output, workspace)
 
         if "pr" in assertion_lower or "pull request" in assertion_lower:
             return self._check_pr_created(assertion, output_dir, agent_output, workspace)
 
-        if "file exists" in assertion_lower or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])):
+        if "file exists" in assertion_lower or (
+            "created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])
+        ):
             return self._check_file_exists(assertion, output_dir, workspace)
 
-        if "ran" in assertion_lower and ("command" in assertion_lower or any(
-            cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"]
-        )):
+        if "ran" in assertion_lower and (
+            "command" in assertion_lower
+            or any(cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"])
+        ):
             return self._check_command_ran(assertion, output_dir)
 
         if "contains" in assertion_lower or "includes" in assertion_lower:
@@ -56,12 +69,14 @@ class DeterministicGrader:
     def _resolve_workspace(self, output_dir: Path, workspace: Path | None) -> Path:
         if workspace:
             return workspace
-        return output_dir.parent.parent if "with_skill" in str(output_dir) or "without_skill" in str(output_dir) else output_dir.parent
+        if "with_skill" in str(output_dir) or "without_skill" in str(output_dir):
+            return output_dir.parent.parent
+        return output_dir.parent
 
     def _check_file_exists(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         ws = self._resolve_workspace(output_dir, workspace)
 
-        patterns = re.findall(r'`([^`]+)`', assertion)
+        patterns = re.findall(r"`([^`]+)`", assertion)
         if not patterns:
             patterns = re.findall(r'"([^"]+)"', assertion)
         if not patterns:
@@ -109,13 +124,13 @@ class DeterministicGrader:
         return AssertionResult(
             text=assertion,
             passed=False,
-            evidence=f"Command not found in logs",
+            evidence="Command not found in logs",
         )
 
     def _check_content_contains(self, assertion: str, agent_output: str) -> AssertionResult:
         patterns = re.findall(r'"([^"]+)"', assertion)
         if not patterns:
-            patterns = re.findall(r'`([^`]+)`', assertion)
+            patterns = re.findall(r"`([^`]+)`", assertion)
 
         output_lower = agent_output.lower()
         for pattern in patterns:
@@ -132,7 +147,9 @@ class DeterministicGrader:
             evidence=f"Pattern not found in output. Searched for: {patterns}",
         )
 
-    def _check_valid_json(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _check_valid_json(
+        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> AssertionResult:
         try:
             json.loads(agent_output)
             return AssertionResult(text=assertion, passed=True, evidence="Output is valid JSON")
@@ -155,6 +172,7 @@ class DeterministicGrader:
 
     def _check_git_branch(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         import subprocess
+
         ws = self._resolve_workspace(output_dir, workspace)
 
         try:
@@ -166,9 +184,9 @@ class DeterministicGrader:
             )
             branches = result.stdout.strip().split("\n")
             branches = [b.strip().lstrip("* ") for b in branches if b.strip()]
-            
+
             non_main_branches = [b for b in branches if "main" not in b and "HEAD" not in b]
-            
+
             if non_main_branches:
                 return AssertionResult(
                     text=assertion,
@@ -182,6 +200,7 @@ class DeterministicGrader:
 
     def _check_git_commit(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         import subprocess
+
         ws = self._resolve_workspace(output_dir, workspace)
 
         try:
@@ -203,8 +222,11 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No new commits found")
 
-    def _check_pushed(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _check_pushed(
+        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> AssertionResult:
         import subprocess
+
         ws = self._resolve_workspace(output_dir, workspace)
 
         try:
@@ -247,8 +269,11 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No push evidence found")
 
-    def _check_pr_created(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _check_pr_created(
+        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> AssertionResult:
         import subprocess
+
         ws = self._resolve_workspace(output_dir, workspace)
 
         try:
@@ -267,7 +292,7 @@ class DeterministicGrader:
         except Exception:
             pass
 
-        pr_indicators = ["pull request", "github.com/pull", "merge request"]
+        pr_indicators = ["pull request", "/pull/", "merge request"]
         output_lower = agent_output.lower()
 
         for indicator in pr_indicators:
@@ -303,9 +328,7 @@ class LLMGrader:
         if self._client is None:
             api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
-                raise OpenAIError(
-                    "OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable."
-                )
+                raise OpenAIError("OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable.")
             base_url = self.base_url or os.environ.get("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
             self._client = OpenAI(
                 api_key=api_key,
@@ -338,7 +361,7 @@ class LLMGrader:
 {file_listing}
 
 ## Assertions to Grade
-{chr(10).join(f'{i+1}. {a}' for i, a in enumerate(assertions))}
+{chr(10).join(f"{i + 1}. {a}" for i, a in enumerate(assertions))}
 
 For each assertion, respond with JSON:
 {{
@@ -359,17 +382,16 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
             data = json.loads(response.choices[0].message.content)
             results = []
             for r in data.get("results", []):
-                results.append(AssertionResult(
-                    text=r["text"],
-                    passed=r["passed"],
-                    evidence=r["evidence"],
-                ))
+                results.append(
+                    AssertionResult(
+                        text=r["text"],
+                        passed=r["passed"],
+                        evidence=r["evidence"],
+                    )
+                )
             return results
         except Exception as e:
-            return [
-                AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}")
-                for a in assertions
-            ]
+            return [AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}") for a in assertions]
 
     def _list_workspace_files(self, workspace: Path) -> str:
         files = []

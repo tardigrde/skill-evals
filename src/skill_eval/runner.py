@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from skill_eval.graders import LLMGrader, grade_assertions
+from skill_eval.harnesses import get_harness
 from skill_eval.models import (
     AgentType,
     BenchmarkResult,
@@ -17,14 +19,10 @@ from skill_eval.models import (
     DeltaStats,
     EvalCase,
     EvalSuite,
-    GradingResult,
     StatsPair,
-    TimingData,
 )
-from skill_eval.harnesses import get_harness
 from skill_eval.skills import SkillInstaller
 from skill_eval.workspace import WorkspaceManager
-from skill_eval.graders import LLMGrader, grade_assertions
 
 console = Console()
 
@@ -190,11 +188,13 @@ class EvalRunner:
 
         for agent_type in self.agents:
             with_results = [
-                r for k, r in results.items()
+                r
+                for k, r in results.items()
                 if r.get("agent") == agent_type.value and r.get("with_skill") and "error" not in r
             ]
             without_results = [
-                r for k, r in results.items()
+                r
+                for k, r in results.items()
                 if r.get("agent") == agent_type.value and not r.get("with_skill") and "error" not in r
             ]
 
