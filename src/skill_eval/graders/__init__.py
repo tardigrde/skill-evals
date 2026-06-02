@@ -4,44 +4,112 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 from openai import OpenAI, OpenAIError
 
-from skill_eval.models import AssertionResult, GradingResult, GradingSummary
+from skill_eval.git_state import capture_git_state, state_diff
+from skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+
+
+def _load_state(path: Path) -> Optional[GitStateSnapshot]:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return GitStateSnapshot(**data)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 class DeterministicGrader:
+    """Grades assertions against the *delta* caused by the agent during a run.
+
+    Prefers persisted pre/post git state snapshots (``pre_state.json``,
+    ``post_state.json``) written by the runner so that regrading works even
+    after the workspace is deleted. Falls back to capturing live state from
+    the workspace when snapshots are missing.
+    """
+
+    def __init__(
+        self,
+        pre_state: GitStateSnapshot | None = None,
+        post_state: GitStateSnapshot | None = None,
+    ):
+        self.pre_state = pre_state
+        self.post_state = post_state
+
     def grade(
-        self, assertions: list[str], output_dir: Path, agent_output: str, workspace: Path | None = None
+        self,
+        assertions: list[str],
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None = None,
+        should_trigger: bool = True,
     ) -> list[AssertionResult]:
+        pre, post = self._resolve_states(output_dir, workspace)
+        self.pre_state = pre
+        self.post_state = post
+        diff = state_diff(pre, post) if pre and post else {}
+
         results = []
         for assertion in assertions:
-            result = self._check_assertion(assertion, output_dir, agent_output, workspace)
+            result = self._check_assertion(assertion, output_dir, agent_output, workspace, should_trigger, diff)
             results.append(result)
         return results
 
+    def _resolve_states(
+        self, output_dir: Path, workspace: Path | None
+    ) -> tuple[Optional[GitStateSnapshot], Optional[GitStateSnapshot]]:
+        if self.pre_state is not None and self.post_state is not None:
+            return self.pre_state, self.post_state
+
+        pre_path = output_dir / "pre_state.json"
+        post_path = output_dir / "post_state.json"
+        pre = _load_state(pre_path)
+        post = _load_state(post_path)
+
+        if pre is not None and post is not None:
+            return pre, post
+
+        if workspace is None:
+            workspace = self._resolve_workspace(output_dir, None)
+
+        try:
+            captured = capture_git_state(workspace)
+        except Exception:
+            return pre, post
+
+        return pre or GitStateSnapshot(), captured
+
     def _check_assertion(
-        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+        self,
+        assertion: str,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+        should_trigger: bool,
+        diff: dict,
     ) -> AssertionResult:
         assertion_lower = assertion.lower()
 
         if "branch" in assertion_lower and (
             "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
         ):
-            return self._check_git_branch(assertion, output_dir, workspace)
+            return self._check_git_branch(assertion, diff, should_trigger)
 
         if "commit" in assertion_lower and (
             "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
         ):
-            return self._check_git_commit(assertion, output_dir, workspace)
+            return self._check_git_commit(assertion, diff, should_trigger)
 
         if "push" in assertion_lower and (
             "remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower
         ):
-            return self._check_pushed(assertion, output_dir, agent_output, workspace)
+            return self._check_pushed(assertion, diff, agent_output, should_trigger)
 
         if "pr" in assertion_lower or "pull request" in assertion_lower:
-            return self._check_pr_created(assertion, output_dir, agent_output, workspace)
+            return self._check_pr_created(assertion, diff, agent_output, should_trigger)
 
         if "file exists" in assertion_lower or (
             "created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])
@@ -73,6 +141,10 @@ class DeterministicGrader:
             return output_dir.parent.parent
         return output_dir.parent
 
+    def _invert(self, should_trigger: bool) -> bool:
+        """For negative controls, branch/commit/push/pr assertions are inverted."""
+        return not should_trigger
+
     def _check_file_exists(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         ws = self._resolve_workspace(output_dir, workspace)
 
@@ -84,6 +156,13 @@ class DeterministicGrader:
             for w in words:
                 if "." in w and "/" not in w:
                     patterns.append(w)
+
+        if not ws.exists():
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=f"Workspace not available. Searched for: {patterns}",
+            )
 
         for pattern in patterns:
             candidates = list(ws.rglob(pattern))
@@ -157,6 +236,9 @@ class DeterministicGrader:
             pass
 
         ws = self._resolve_workspace(output_dir, workspace)
+        if not ws.exists():
+            return AssertionResult(text=assertion, passed=False, evidence="Workspace not available for JSON check")
+
         for json_file in ws.rglob("*.json"):
             try:
                 json.loads(json_file.read_text())
@@ -170,151 +252,136 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No valid JSON found")
 
-    def _check_git_branch(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
+    def _check_git_branch(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_branches = diff.get("new_branches", []) or []
+        branch_changed = diff.get("current_branch_changed", False)
 
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["git", "branch", "-a"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if inverted:
+            if new_branches or branch_changed:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but new branches appeared: "
+                        f"{new_branches or 'current branch changed'}"
+                    ),
+                )
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new branch was created (skill did not trigger)",
             )
-            branches = result.stdout.strip().split("\n")
-            branches = [b.strip().lstrip("* ") for b in branches if b.strip()]
 
-            non_main_branches = [b for b in branches if "main" not in b and "HEAD" not in b]
-
-            if non_main_branches:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Branches found: {', '.join(non_main_branches[:3])}",
-                )
-        except Exception as e:
-            return AssertionResult(text=assertion, passed=False, evidence=f"Git error: {e}")
-
-        return AssertionResult(text=assertion, passed=False, evidence="No new branch found")
-
-    def _check_git_commit(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
-
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["git", "log", "--oneline", "-5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if not new_branches and not branch_changed:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence="No new branch appeared in this run (pre/post state unchanged)",
             )
-            commits = result.stdout.strip().split("\n")
-            if len(commits) > 1:
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=(
+                f"New branch(es) created: {', '.join(new_branches)}"
+                if new_branches
+                else f"Current branch changed to: {diff.get('current_branch', '?')}"
+            ),
+        )
+
+    def _check_git_commit(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        advanced = diff.get("head_advanced", False)
+        new_commits = diff.get("new_commits", []) or []
+
+        if inverted:
+            if advanced:
                 return AssertionResult(
                     text=assertion,
-                    passed=True,
-                    evidence=f"Commits found: {len(commits)}",
+                    passed=False,
+                    evidence="Skill should not have triggered, but HEAD advanced",
                 )
-        except Exception as e:
-            return AssertionResult(text=assertion, passed=False, evidence=f"Git error: {e}")
-
-        return AssertionResult(text=assertion, passed=False, evidence="No new commits found")
-
-    def _check_pushed(
-        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
-    ) -> AssertionResult:
-        import subprocess
-
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["git", "log", "--remotes", "--oneline", "-5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="HEAD did not advance (skill did not trigger)",
             )
-            if result.stdout.strip():
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Remote branches have commits: {result.stdout.strip()[:100]}",
-                )
-        except Exception:
-            pass
 
-        push_indicators = ["push", "pushed", "git push", "origin"]
-        output_lower = agent_output.lower()
-
-        for indicator in push_indicators:
-            if indicator in output_lower:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Found push indicator '{indicator}' in output",
-                )
-
-        stderr_log = output_dir / "stderr.log"
-        if stderr_log.exists():
-            stderr_content = stderr_log.read_text().lower()
-            for indicator in push_indicators:
-                if indicator in stderr_content:
-                    return AssertionResult(
-                        text=assertion,
-                        passed=True,
-                        evidence=f"Found push indicator '{indicator}' in stderr",
-                    )
-
-        return AssertionResult(text=assertion, passed=False, evidence="No push evidence found")
-
-    def _check_pr_created(
-        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
-    ) -> AssertionResult:
-        import subprocess
-
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["gh", "pr", "list", "--state", "open", "--limit", "5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if not advanced:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence="HEAD did not advance from baseline (no new commit)",
             )
-            if result.returncode == 0 and result.stdout.strip():
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=f"HEAD advanced; {len(new_commits)} new commit(s)",
+        )
+
+    def _check_pushed(self, assertion: str, diff: dict, agent_output: str, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_remote_branches = diff.get("new_remote_branches", []) or []
+
+        if inverted:
+            if new_remote_branches:
                 return AssertionResult(
                     text=assertion,
-                    passed=True,
-                    evidence=f"Open PRs found: {result.stdout.strip()[:100]}",
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but new remote branches appeared: {new_remote_branches}"
+                    ),
                 )
-        except Exception:
-            pass
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new remote branches (skill did not trigger)",
+            )
 
-        pr_indicators = ["pull request", "/pull/", "merge request"]
-        output_lower = agent_output.lower()
+        if new_remote_branches:
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence=f"New remote branches: {', '.join(new_remote_branches)}",
+            )
 
-        for indicator in pr_indicators:
-            if indicator in output_lower:
+        return AssertionResult(
+            text=assertion,
+            passed=False,
+            evidence="No new remote branches appeared in this run",
+        )
+
+    def _check_pr_created(self, assertion: str, diff: dict, agent_output: str, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_prs = diff.get("new_open_prs", []) or []
+
+        if inverted:
+            if new_prs:
                 return AssertionResult(
                     text=assertion,
-                    passed=True,
-                    evidence=f"Found PR indicator '{indicator}' in output",
+                    passed=False,
+                    evidence=f"Skill should not have triggered, but new PR(s) appeared: "
+                    f"{[p.get('number') for p in new_prs]}",
                 )
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new PRs were opened (skill did not trigger)",
+            )
 
-        stderr_log = output_dir / "stderr.log"
-        if stderr_log.exists():
-            stderr_content = stderr_log.read_text().lower()
-            for indicator in pr_indicators:
-                if indicator in stderr_content:
-                    return AssertionResult(
-                        text=assertion,
-                        passed=True,
-                        evidence=f"Found PR indicator '{indicator}' in stderr",
-                    )
+        if new_prs:
+            numbers = [p.get("number") for p in new_prs]
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence=f"New PR(s) opened: {numbers}",
+            )
 
-        return AssertionResult(text=assertion, passed=False, evidence="No PR creation evidence found")
+        return AssertionResult(
+            text=assertion,
+            passed=False,
+            evidence="No new PRs appeared in this run (state diff shows no new PRs)",
+        )
 
 
 class LLMGrader:
@@ -413,9 +480,14 @@ def grade_assertions(
     expected_output: str,
     llm_grader: LLMGrader | None = None,
     workspace: Path | None = None,
+    pre_state: GitStateSnapshot | None = None,
+    post_state: GitStateSnapshot | None = None,
+    should_trigger: bool = True,
 ) -> GradingResult:
-    det_grader = DeterministicGrader()
-    det_results = det_grader.grade(assertions, output_dir, agent_output, workspace=workspace)
+    det_grader = DeterministicGrader(pre_state=pre_state, post_state=post_state)
+    det_results = det_grader.grade(
+        assertions, output_dir, agent_output, workspace=workspace, should_trigger=should_trigger
+    )
 
     undetermined = [r for r in det_results if "Could not deterministically check" in r.evidence]
     determined = [r for r in det_results if "Could not deterministically check" not in r.evidence]

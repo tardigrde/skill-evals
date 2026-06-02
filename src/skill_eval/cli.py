@@ -13,7 +13,8 @@ from rich.table import Table
 
 load_dotenv()
 
-from skill_eval.models import AgentType  # noqa: E402
+from skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
+from skill_eval.models import AgentType, CleanupManifest  # noqa: E402
 from skill_eval.runner import EvalRunner  # noqa: E402
 
 app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, and Codex")
@@ -82,83 +83,142 @@ def run(
     if auto_cleanup:
         console.print()
         console.print("[yellow]Running cleanup...[/yellow]")
-        if source_repo:
-            _cleanup_source_repo(source_repo)
-        _cleanup_workspaces(workspace)
+        _cleanup_iteration(result_dir, workspace)
         console.print("[green]Cleanup complete![/green]")
 
 
-def _cleanup_source_repo(source_repo: str) -> None:
-    repo_slug = source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git")
+def _cleanup_iteration(iteration_dir: Path, workspace_base: Path) -> None:
+    """Clean up only artifacts recorded for this iteration's cleanup manifest.
 
-    result = subprocess.run(
-        ["gh", "pr", "list", "--repo", repo_slug, "--state", "open", "--json", "number"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        prs = json.loads(result.stdout)
-        for pr in prs:
-            num = pr["number"]
-            subprocess.run(
-                ["gh", "pr", "close", str(num), "--repo", repo_slug],
-                capture_output=True,
-            )
-            console.print(f"  [dim]Closed PR #{num}[/dim]")
+    Reads ``cleanup.json`` from the iteration dir. If the manifest is missing,
+    fall back to workspace-only cleanup (we never infer "delete all non-default
+    branches" or "close all open PRs" because that is unsafe).
+    """
+    manifest = _load_manifest(iteration_dir)
 
-    result = subprocess.run(
-        ["gh", "api", f"repos/{repo_slug}/branches", "--jq", ".[].name"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        default_result = subprocess.run(
-            ["gh", "api", f"repos/{repo_slug}", "--jq", ".default_branch"],
-            capture_output=True,
-            text=True,
-        )
-        default_branch = default_result.stdout.strip() if default_result.returncode == 0 else "main"
-        for branch in result.stdout.strip().split("\n"):
-            branch = branch.strip()
-            if branch and branch != default_branch:
-                subprocess.run(
-                    ["gh", "api", "-X", "DELETE", f"repos/{repo_slug}/git/refs/heads/{branch}"],
-                    capture_output=True,
-                )
-                console.print(f"  [dim]Deleted branch {branch}[/dim]")
+    if manifest and (manifest.branches or manifest.pr_numbers):
+        _cleanup_manifest(manifest, source_repo=manifest.source_repo)
+    elif manifest is None and iteration_dir.exists():
+        console.print(f"  [yellow]No cleanup.json in {iteration_dir}; only removing local workspaces[/yellow]")
 
+    if manifest:
+        for ws_path in manifest.workspaces:
+            ws = Path(ws_path)
+            if ws.exists():
+                shutil.rmtree(ws)
+                console.print(f"  [dim]Removed {ws.name}[/dim]")
 
-def _cleanup_workspaces(workspace_base: Path) -> None:
     for ws_dir in workspace_base.glob("skill-eval-*"):
         if ws_dir.is_dir():
             shutil.rmtree(ws_dir)
             console.print(f"  [dim]Removed {ws_dir.name}[/dim]")
 
 
+def _load_manifest(iteration_dir: Path) -> Optional[CleanupManifest]:
+    manifest_path = iteration_dir / "cleanup.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        data = json.loads(manifest_path.read_text())
+        return CleanupManifest(**data)
+    except (json.JSONDecodeError, ValueError) as e:
+        console.print(f"  [red]Could not parse cleanup.json: {e}[/red]")
+        return None
+
+
+def _cleanup_manifest(manifest: CleanupManifest, source_repo: Optional[str]) -> None:
+    if not source_repo or not manifest.source_repo_slug:
+        return
+
+    slug = manifest.source_repo_slug
+
+    for pr_number in manifest.pr_numbers:
+        result = subprocess.run(
+            ["gh", "pr", "close", str(pr_number), "--repo", slug, "--delete-branch"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            console.print(f"  [dim]Closed PR #{pr_number}[/dim]")
+        else:
+            console.print(
+                f"  [yellow]Could not close PR #{pr_number}: {result.stderr.strip() or 'unknown error'}[/yellow]"
+            )
+
+    for branch in manifest.branches:
+        result = subprocess.run(
+            ["gh", "api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            console.print(f"  [dim]Deleted branch {branch}[/dim]")
+        else:
+            console.print(
+                f"  [yellow]Could not delete branch {branch}: {result.stderr.strip() or 'unknown error'}[/yellow]"
+            )
+
+
 @app.command()
 def cleanup(
+    iteration: Optional[Path] = typer.Option(
+        None,
+        "--iteration",
+        "-i",
+        help="Path to an iteration directory (e.g. eval-workspace/<skill>-workspace/iteration-1). "
+        "If omitted, all iteration dirs under --workspace are cleaned up.",
+    ),
     workspace: Path = typer.Option(
         Path.cwd() / "eval-workspace",
         "--workspace",
         "-w",
-        help="Base directory for eval workspace",
+        help="Base directory for eval workspace (used when --iteration is omitted)",
     ),
-    source_repo: Optional[str] = typer.Option(
-        None,
-        "--source-repo",
-        help="Git repo URL to clean up PRs/branches on",
-    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ):
-    """Clean up eval artifacts: close PRs, delete branches, remove workspaces."""
-    console.print("[yellow]Cleaning up eval artifacts...[/yellow]")
+    """Clean up eval artifacts from cleanup.json manifests.
 
-    if source_repo:
-        console.print(f"[cyan]Cleaning source repo: {source_repo}[/cyan]")
-        _cleanup_source_repo(source_repo)
+    This command is SAFE: it only closes PRs and deletes branches that were
+    recorded in ``cleanup.json`` by a previous ``run`` invocation. It will
+    never close unrelated PRs or delete unrelated branches.
+    """
+    iteration_dirs: list[Path] = []
+    if iteration:
+        if not iteration.exists():
+            console.print(f"[red]Iteration directory not found: {iteration}[/red]")
+            raise typer.Exit(1)
+        iteration_dirs = [iteration]
+    else:
+        if not workspace.exists():
+            console.print(f"[yellow]Workspace directory not found: {workspace}[/yellow]")
+            return
+        iteration_dirs = sorted(p for p in workspace.glob("*/iteration-*") if p.is_dir())
 
-    if workspace.exists():
-        console.print(f"[cyan]Cleaning workspaces in: {workspace}[/cyan]")
-        _cleanup_workspaces(workspace)
+    if not iteration_dirs:
+        console.print("[yellow]No iteration directories found[/yellow]")
+        return
+
+    for iter_dir in iteration_dirs:
+        manifest = _load_manifest(iter_dir)
+        if manifest is None:
+            console.print(f"[yellow]{iter_dir.name}: no cleanup.json, skipping source repo cleanup[/yellow]")
+        elif manifest.branches or manifest.pr_numbers:
+            console.print(
+                f"[cyan]{iter_dir.name}: cleaning {len(manifest.branches)} branch(es), "
+                f"{len(manifest.pr_numbers)} PR(s) on {manifest.source_repo_slug}[/cyan]"
+            )
+
+            if not yes:
+                confirm = typer.confirm("Proceed?", default=False)
+                if not confirm:
+                    console.print("  [dim]Skipped[/dim]")
+                    continue
+
+            _cleanup_manifest(manifest, source_repo=manifest.source_repo)
+
+        for ws_dir in iter_dir.parent.glob("skill-eval-*"):
+            if ws_dir.is_dir():
+                shutil.rmtree(ws_dir)
 
     console.print("[green]Cleanup complete![/green]")
 
@@ -170,20 +230,49 @@ def grade(
         "deepseek/deepseek-v4-flash", "--grader-model", help="LLM model for rubric grading"
     ),
     grader_base_url: Optional[str] = typer.Option(None, "--grader-base-url", help="Custom API base URL for grader"),
+    recompute_benchmark: bool = typer.Option(
+        False, "--recompute-benchmark", help="Recompute benchmark.json from updated grading.json files"
+    ),
 ):
-    """Re-grade existing eval results with updated assertions."""
+    """Re-grade existing eval results using saved eval metadata and state snapshots."""
     if not workspace.exists():
         console.print(f"[red]Workspace not found: {workspace}[/red]")
         raise typer.Exit(1)
 
     console.print(f"[yellow]Re-grading results in {workspace}...[/yellow]")
 
-    from skill_eval.graders import LLMGrader, grade_assertions
+    meta_path = workspace / "evals_meta.json"
+    if not meta_path.exists():
+        console.print(
+            f"[red]No evals_meta.json in {workspace}. Cannot determine assertions. "
+            f"Re-run 'skill-eval run' to generate it.[/red]"
+        )
+        raise typer.Exit(1)
 
-    llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url)
+    with open(meta_path) as f:
+        meta = json.load(f)
 
+    eval_lookup: dict[str, dict] = {}
+    for eval_case in meta.get("evals", []):
+        eval_lookup[str(eval_case["id"])] = eval_case
+
+    try:
+        llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url)
+    except Exception:
+        llm_grader = None
+
+    updated = 0
     for eval_dir in sorted(workspace.glob("eval-*")):
-        for config_dir in eval_dir.iterdir():
+        eval_id = eval_dir.name[len("eval-") :]
+        eval_case = eval_lookup.get(eval_id)
+        if not eval_case:
+            console.print(f"  [yellow]No metadata for {eval_dir.name}, skipping[/yellow]")
+            continue
+
+        assertions = eval_case.get("assertions", [])
+        should_trigger = eval_case.get("should_trigger", True)
+
+        for config_dir in sorted(eval_dir.iterdir()):
             if not config_dir.is_dir():
                 continue
             output_path = config_dir / "outputs" / "output.txt"
@@ -191,12 +280,71 @@ def grade(
                 continue
 
             agent_output = output_path.read_text()
-            grading = grade_assertions([], agent_output, config_dir / "outputs", "", llm_grader)
+            grading = grade_assertions(
+                assertions,
+                agent_output,
+                config_dir / "outputs",
+                eval_case.get("expected_output", ""),
+                llm_grader,
+                pre_state=None,
+                post_state=None,
+                should_trigger=should_trigger,
+            )
+
+            grading_path = config_dir / "grading.json"
+            with open(grading_path, "w") as f:
+                json.dump(grading.model_dump(), f, indent=2)
+
             console.print(
                 f"  {eval_dir.name}/{config_dir.name}: {grading.summary.passed}/{grading.summary.total} passed"
             )
+            updated += 1
 
-    console.print("[green]Re-grading complete![/green]")
+    if recompute_benchmark:
+        from skill_eval.runner import compute_benchmark
+
+        results = _collect_results(workspace)
+        agents = sorted({r.get("agent") for r in results.values() if r.get("agent") and r.get("agent") != "unknown"})
+        agent_types = [AgentType(a) for a in agents if a in {t.value for t in AgentType}]
+        benchmark = compute_benchmark(
+            results, agent_types, with_baseline=any(not r.get("with_skill", True) for r in results.values())
+        )
+        with open(workspace / "benchmark.json", "w") as f:
+            json.dump(benchmark.model_dump(), f, indent=2)
+        console.print("[green]benchmark.json recomputed[/green]")
+    else:
+        console.print(
+            "[yellow]benchmark.json NOT recomputed. Re-run 'skill-eval run' or pass --recompute-benchmark.[/yellow]"
+        )
+
+    console.print(f"[green]Re-grading complete! Updated {updated} grading file(s).[/green]")
+
+
+def _collect_results(workspace: Path) -> dict[str, dict]:
+    results: dict[str, dict] = {}
+    for eval_dir in sorted(workspace.glob("eval-*")):
+        for config_dir in sorted(eval_dir.iterdir()):
+            if not config_dir.is_dir():
+                continue
+            grading_path = config_dir / "grading.json"
+            timing_path = config_dir / "timing.json"
+            if not grading_path.exists() or not timing_path.exists():
+                continue
+            with open(grading_path) as f:
+                grading = json.load(f)
+            with open(timing_path) as f:
+                timing = json.load(f)
+            parts = config_dir.name.split("-")
+            agent = parts[0] if parts else "unknown"
+            with_skill = config_dir.name == "with_skill"
+            key = f"{eval_dir.name}-unknown-{config_dir.name}"
+            results[key] = {
+                "agent": agent,
+                "with_skill": with_skill,
+                "timing": timing,
+                "grading": grading,
+            }
+    return results
 
 
 @app.command()

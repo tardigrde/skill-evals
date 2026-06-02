@@ -20,11 +20,32 @@ class EvalCase(BaseModel):
     files: list[str] = Field(default_factory=list)
     assertions: list[str] = Field(default_factory=list)
     should_trigger: bool = True
+    force_skill_invocation: bool = False
+    stage_files: bool = False
 
 
 class EvalSuite(BaseModel):
     skill_name: str
     evals: list[EvalCase]
+
+
+class GitStateSnapshot(BaseModel):
+    local_branches: list[str] = Field(default_factory=list)
+    remote_branches: list[str] = Field(default_factory=list)
+    current_branch: str = ""
+    head_sha: str = ""
+    commit_count: int = 0
+    commits: list[str] = Field(default_factory=list)
+    remote_names: list[str] = Field(default_factory=list)
+    open_prs: list[dict] = Field(default_factory=list)
+
+
+class CleanupManifest(BaseModel):
+    source_repo: Optional[str] = None
+    source_repo_slug: Optional[str] = None
+    branches: list[str] = Field(default_factory=list)
+    pr_numbers: list[int] = Field(default_factory=list)
+    workspaces: list[str] = Field(default_factory=list)
 
 
 class TimingData(BaseModel):
