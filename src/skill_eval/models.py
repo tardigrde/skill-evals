@@ -38,12 +38,25 @@ class GitStateSnapshot(BaseModel):
     commits: list[str] = Field(default_factory=list)
     remote_names: list[str] = Field(default_factory=list)
     open_prs: list[dict] = Field(default_factory=list)
+    branch_heads: dict[str, str] = Field(default_factory=dict)
+    remote_branch_heads: dict[str, str] = Field(default_factory=dict)
+    commit_shas: list[str] = Field(default_factory=list)
+
+
+class RunMeta(BaseModel):
+    eval_id: int | str
+    agent: str
+    with_skill: bool
+    iteration: int = 1
+    skill_name: str = ""
+    source_repo: Optional[str] = None
+    run_id: str = ""
 
 
 class CleanupManifest(BaseModel):
     source_repo: Optional[str] = None
     source_repo_slug: Optional[str] = None
-    branches: list[str] = Field(default_factory=list)
+    remote_branches: list[str] = Field(default_factory=list)
     pr_numbers: list[int] = Field(default_factory=list)
     workspaces: list[str] = Field(default_factory=list)
 

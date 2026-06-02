@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,57 @@ from openai import OpenAI, OpenAIError
 
 from skill_eval.git_state import capture_git_state, state_diff
 from skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+
+
+def _is_open_pr_state(state: Optional[str]) -> bool:
+    """True if a PR state string represents an open PR.
+
+    ``gh pr list --state all`` returns PRs with state ``OPEN``, ``CLOSED``,
+    or ``MERGED``. A missing/empty state is treated as not-open so we never
+    falsely satisfy a PR-created assertion on a stale or partial snapshot.
+    """
+    if not state:
+        return False
+    return str(state).upper() == "OPEN"
+
+
+def _fetch_pr_for_branch(branch: str, source_repo: str) -> Optional[dict]:
+    """Look up a PR for ``branch`` in ``source_repo`` via ``gh pr view``.
+
+    Returns the parsed JSON dict on success, or ``None`` if ``gh`` is not
+    available, the repo is not configured, the PR is not found, or the
+    output cannot be parsed. Never raises.
+    """
+    if not source_repo or not branch:
+        return None
+    slug = source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git")
+    if not slug:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                branch,
+                "--repo",
+                slug,
+                "--json",
+                "number,headRefName,baseRefName,url,state",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
 
 
 def _load_state(path: Path) -> Optional[GitStateSnapshot]:
@@ -109,7 +161,7 @@ class DeterministicGrader:
             return self._check_pushed(assertion, diff, agent_output, should_trigger)
 
         if "pr" in assertion_lower or "pull request" in assertion_lower:
-            return self._check_pr_created(assertion, diff, agent_output, should_trigger)
+            return self._check_pr_created(assertion, diff, agent_output, should_trigger, output_dir)
 
         if "file exists" in assertion_lower or (
             "created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])
@@ -144,6 +196,25 @@ class DeterministicGrader:
     def _invert(self, should_trigger: bool) -> bool:
         """For negative controls, branch/commit/push/pr assertions are inverted."""
         return not should_trigger
+
+    def _source_repo_from_meta(self, output_dir: Path | None) -> Optional[str]:
+        """Read ``source_repo`` from ``run_meta.json`` adjacent to ``outputs/``.
+
+        Returns ``None`` when no metadata is available or the field is unset.
+        The grader uses this to optionally corroborate PR checks via
+        ``gh pr view <branch>`` for a real-time validation pass.
+        """
+        if output_dir is None:
+            return None
+        meta_path = output_dir.parent / "run_meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            data = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None
+        repo = data.get("source_repo")
+        return str(repo) if repo else None
 
     def _check_file_exists(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         ws = self._resolve_workspace(output_dir, workspace)
@@ -255,16 +326,24 @@ class DeterministicGrader:
     def _check_git_branch(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
         inverted = self._invert(should_trigger)
         new_branches = diff.get("new_branches", []) or []
+        eval_branch = diff.get("eval_branch")
+        current_branch = diff.get("current_branch", "")
         branch_changed = diff.get("current_branch_changed", False)
 
         if inverted:
-            if new_branches or branch_changed:
+            if new_branches:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(f"Skill should not have triggered, but new branches appeared: {new_branches}"),
+                )
+            if branch_changed and eval_branch:
                 return AssertionResult(
                     text=assertion,
                     passed=False,
                     evidence=(
-                        f"Skill should not have triggered, but new branches appeared: "
-                        f"{new_branches or 'current branch changed'}"
+                        f"Skill should not have triggered, but current branch changed to "
+                        f"new eval branch {current_branch!r}"
                     ),
                 )
             return AssertionResult(
@@ -273,55 +352,81 @@ class DeterministicGrader:
                 evidence="No new branch was created (skill did not trigger)",
             )
 
-        if not new_branches and not branch_changed:
+        if not new_branches:
             return AssertionResult(
                 text=assertion,
                 passed=False,
-                evidence="No new branch appeared in this run (pre/post state unchanged)",
+                evidence=(
+                    f"No new branch appeared in this run. current_branch={current_branch!r}; no eval-created branch."
+                ),
+            )
+        if eval_branch is None:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New branches {new_branches} appeared, but none is the current/eval branch. "
+                    f"current_branch={current_branch!r}"
+                ),
             )
         return AssertionResult(
             text=assertion,
             passed=True,
-            evidence=(
-                f"New branch(es) created: {', '.join(new_branches)}"
-                if new_branches
-                else f"Current branch changed to: {diff.get('current_branch', '?')}"
-            ),
+            evidence=f"New eval branch created and checked out: {eval_branch}",
         )
 
     def _check_git_commit(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
         inverted = self._invert(should_trigger)
         advanced = diff.get("head_advanced", False)
         new_commits = diff.get("new_commits", []) or []
+        new_commit_shas = diff.get("new_commit_shas", []) or []
+        post_head = self.post_state.head_sha if self.post_state else ""
 
         if inverted:
-            if advanced:
+            if advanced or new_commit_shas or new_commits:
                 return AssertionResult(
                     text=assertion,
                     passed=False,
-                    evidence="Skill should not have triggered, but HEAD advanced",
+                    evidence="Skill should not have triggered, but new commit(s) were created",
                 )
             return AssertionResult(
                 text=assertion,
                 passed=True,
-                evidence="HEAD did not advance (skill did not trigger)",
+                evidence="No new commit was created (skill did not trigger)",
             )
 
-        if not advanced:
+        if not new_commit_shas and not new_commits:
             return AssertionResult(
                 text=assertion,
                 passed=False,
-                evidence="HEAD did not advance from baseline (no new commit)",
+                evidence=(
+                    "HEAD may have moved, but no new commit was created in this run. "
+                    f"head_advanced={advanced}, new_commits={new_commits}"
+                ),
+            )
+        if new_commit_shas and post_head and post_head not in new_commit_shas:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New commit(s) appeared ({len(new_commit_shas)}), but current HEAD "
+                    f"({post_head[:12]}) is not one of them. The new commit is not on the "
+                    f"current branch."
+                ),
             )
         return AssertionResult(
             text=assertion,
             passed=True,
-            evidence=f"HEAD advanced; {len(new_commits)} new commit(s)",
+            evidence=f"New commit on current branch (HEAD {post_head[:12] if post_head else '?'})",
         )
 
     def _check_pushed(self, assertion: str, diff: dict, agent_output: str, should_trigger: bool) -> AssertionResult:
         inverted = self._invert(should_trigger)
         new_remote_branches = diff.get("new_remote_branches", []) or []
+        eval_branch = diff.get("eval_branch")
+        eval_branch_pushed = diff.get("eval_branch_pushed", False)
+        eval_branch_pushed_matches_head = diff.get("eval_branch_pushed_matches_head", False)
+        post_head = self.post_state.head_sha if self.post_state else ""
 
         if inverted:
             if new_remote_branches:
@@ -332,36 +437,79 @@ class DeterministicGrader:
                         f"Skill should not have triggered, but new remote branches appeared: {new_remote_branches}"
                     ),
                 )
+            if eval_branch_pushed:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence="Skill should not have triggered, but eval branch was pushed",
+                )
             return AssertionResult(
                 text=assertion,
                 passed=True,
                 evidence="No new remote branches (skill did not trigger)",
             )
 
-        if new_remote_branches:
+        if not eval_branch:
             return AssertionResult(
                 text=assertion,
-                passed=True,
-                evidence=f"New remote branches: {', '.join(new_remote_branches)}",
+                passed=False,
+                evidence=("No eval-created branch in this run; cannot verify that the right branch was pushed."),
             )
-
+        if not eval_branch_pushed:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(f"Eval branch {eval_branch!r} was not pushed. new_remote_branches={new_remote_branches}"),
+            )
+        if not eval_branch_pushed_matches_head:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"Eval branch {eval_branch!r} was pushed, but its remote HEAD does not "
+                    f"match the local HEAD ({post_head[:12] if post_head else '?'})."
+                ),
+            )
         return AssertionResult(
             text=assertion,
-            passed=False,
-            evidence="No new remote branches appeared in this run",
+            passed=True,
+            evidence=(f"Eval branch {eval_branch!r} pushed with HEAD {post_head[:12] if post_head else '?'}"),
         )
 
-    def _check_pr_created(self, assertion: str, diff: dict, agent_output: str, should_trigger: bool) -> AssertionResult:
+    def _check_pr_created(
+        self,
+        assertion: str,
+        diff: dict,
+        agent_output: str,
+        should_trigger: bool,
+        output_dir: Path | None = None,
+    ) -> AssertionResult:
         inverted = self._invert(should_trigger)
         new_prs = diff.get("new_open_prs", []) or []
+        eval_branch = diff.get("eval_branch")
+
+        source_repo = self._source_repo_from_meta(output_dir)
+        live_pr: Optional[dict] = None
+        if source_repo and eval_branch:
+            live_pr = _fetch_pr_for_branch(eval_branch, source_repo)
 
         if inverted:
             if new_prs:
                 return AssertionResult(
                     text=assertion,
                     passed=False,
-                    evidence=f"Skill should not have triggered, but new PR(s) appeared: "
-                    f"{[p.get('number') for p in new_prs]}",
+                    evidence=(
+                        f"Skill should not have triggered, but new PR(s) appeared: {[p.get('number') for p in new_prs]}"
+                    ),
+                )
+            if live_pr and _is_open_pr_state(live_pr.get("state")):
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but gh pr view reports an "
+                        f"open PR for {eval_branch!r} (#{live_pr.get('number')})"
+                    ),
                 )
             return AssertionResult(
                 text=assertion,
@@ -369,18 +517,64 @@ class DeterministicGrader:
                 evidence="No new PRs were opened (skill did not trigger)",
             )
 
-        if new_prs:
-            numbers = [p.get("number") for p in new_prs]
+        if not new_prs:
+            if live_pr and _is_open_pr_state(live_pr.get("state")):
+                return AssertionResult(
+                    text=assertion,
+                    passed=True,
+                    evidence=(
+                        f"State snapshot shows no new PRs, but gh pr view confirms an "
+                        f"open PR #{live_pr.get('number')} for eval branch {eval_branch!r}"
+                    ),
+                )
             return AssertionResult(
                 text=assertion,
-                passed=True,
-                evidence=f"New PR(s) opened: {numbers}",
+                passed=False,
+                evidence="No new PRs appeared in this run (state diff shows no new PRs)",
+            )
+        if not eval_branch:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New PR(s) {[p.get('number') for p in new_prs]} appeared, but no "
+                    f"eval-created branch was identified in this run; cannot verify the "
+                    f"PR is for the eval branch."
+                ),
+            )
+        matching = [p for p in new_prs if p.get("headRefName") == eval_branch and _is_open_pr_state(p.get("state"))]
+        if not matching:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New PR(s) {[p.get('number') for p in new_prs]} appeared, but none "
+                    f"have headRefName matching eval branch {eval_branch!r} with state OPEN. "
+                    f"head refs: {[p.get('headRefName') for p in new_prs]}, "
+                    f"states: {[p.get('state') for p in new_prs]}"
+                ),
             )
 
+        if live_pr is not None and not _is_open_pr_state(live_pr.get("state")):
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"State snapshot shows open PR(s) {[p.get('number') for p in matching]} "
+                    f"for eval branch {eval_branch!r}, but gh pr view reports the PR is "
+                    f"{live_pr.get('state')!r}; the PR was likely closed/merged between "
+                    f"snapshot and grading."
+                ),
+            )
+
+        numbers = [p.get("number") for p in matching]
+        evidence = f"PR(s) for eval branch {eval_branch!r}: {numbers}"
+        if live_pr is not None:
+            evidence += f" (corroborated by gh pr view: state={live_pr.get('state')!r})"
         return AssertionResult(
             text=assertion,
-            passed=False,
-            evidence="No new PRs appeared in this run (state diff shows no new PRs)",
+            passed=True,
+            evidence=evidence,
         )
 
 

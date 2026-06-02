@@ -91,15 +91,21 @@ def _cleanup_iteration(iteration_dir: Path, workspace_base: Path) -> None:
     """Clean up only artifacts recorded for this iteration's cleanup manifest.
 
     Reads ``cleanup.json`` from the iteration dir. If the manifest is missing,
-    fall back to workspace-only cleanup (we never infer "delete all non-default
-    branches" or "close all open PRs" because that is unsafe).
+    we do NOT touch remote state (no "delete all branches" or "close all PRs"
+    inference). We also do NOT glob-delete unrecorded ``skill-eval-*``
+    workspaces under the workspace base, because those may belong to other
+    runs or manual debugging. The only workspaces removed are those listed
+    in the manifest.
     """
     manifest = _load_manifest(iteration_dir)
 
-    if manifest and (manifest.branches or manifest.pr_numbers):
+    if manifest and (manifest.remote_branches or manifest.pr_numbers):
         _cleanup_manifest(manifest, source_repo=manifest.source_repo)
     elif manifest is None and iteration_dir.exists():
-        console.print(f"  [yellow]No cleanup.json in {iteration_dir}; only removing local workspaces[/yellow]")
+        console.print(
+            f"  [yellow]No cleanup.json in {iteration_dir}; skipping source repo cleanup "
+            f"and unrecorded workspace deletion[/yellow]"
+        )
 
     if manifest:
         for ws_path in manifest.workspaces:
@@ -107,11 +113,6 @@ def _cleanup_iteration(iteration_dir: Path, workspace_base: Path) -> None:
             if ws.exists():
                 shutil.rmtree(ws)
                 console.print(f"  [dim]Removed {ws.name}[/dim]")
-
-    for ws_dir in workspace_base.glob("skill-eval-*"):
-        if ws_dir.is_dir():
-            shutil.rmtree(ws_dir)
-            console.print(f"  [dim]Removed {ws_dir.name}[/dim]")
 
 
 def _load_manifest(iteration_dir: Path) -> Optional[CleanupManifest]:
@@ -145,7 +146,7 @@ def _cleanup_manifest(manifest: CleanupManifest, source_repo: Optional[str]) -> 
                 f"  [yellow]Could not close PR #{pr_number}: {result.stderr.strip() or 'unknown error'}[/yellow]"
             )
 
-    for branch in manifest.branches:
+    for branch in manifest.remote_branches:
         result = subprocess.run(
             ["gh", "api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{branch}"],
             capture_output=True,
@@ -202,9 +203,9 @@ def cleanup(
         manifest = _load_manifest(iter_dir)
         if manifest is None:
             console.print(f"[yellow]{iter_dir.name}: no cleanup.json, skipping source repo cleanup[/yellow]")
-        elif manifest.branches or manifest.pr_numbers:
+        elif manifest.remote_branches or manifest.pr_numbers:
             console.print(
-                f"[cyan]{iter_dir.name}: cleaning {len(manifest.branches)} branch(es), "
+                f"[cyan]{iter_dir.name}: cleaning {len(manifest.remote_branches)} branch(es), "
                 f"{len(manifest.pr_numbers)} PR(s) on {manifest.source_repo_slug}[/cyan]"
             )
 
@@ -216,9 +217,11 @@ def cleanup(
 
             _cleanup_manifest(manifest, source_repo=manifest.source_repo)
 
-        for ws_dir in iter_dir.parent.glob("skill-eval-*"):
-            if ws_dir.is_dir():
-                shutil.rmtree(ws_dir)
+        if manifest and manifest.workspaces:
+            for ws_path in manifest.workspaces:
+                ws = Path(ws_path)
+                if ws.exists():
+                    shutil.rmtree(ws)
 
     console.print("[green]Cleanup complete![/green]")
 
@@ -272,33 +275,37 @@ def grade(
         assertions = eval_case.get("assertions", [])
         should_trigger = eval_case.get("should_trigger", True)
 
-        for config_dir in sorted(eval_dir.iterdir()):
-            if not config_dir.is_dir():
+        for agent_dir in sorted(eval_dir.iterdir()):
+            if not agent_dir.is_dir():
                 continue
-            output_path = config_dir / "outputs" / "output.txt"
-            if not output_path.exists():
-                continue
+            for config_dir in sorted(agent_dir.iterdir()):
+                if not config_dir.is_dir():
+                    continue
+                output_path = config_dir / "outputs" / "output.txt"
+                if not output_path.exists():
+                    continue
 
-            agent_output = output_path.read_text()
-            grading = grade_assertions(
-                assertions,
-                agent_output,
-                config_dir / "outputs",
-                eval_case.get("expected_output", ""),
-                llm_grader,
-                pre_state=None,
-                post_state=None,
-                should_trigger=should_trigger,
-            )
+                agent_output = output_path.read_text()
+                grading = grade_assertions(
+                    assertions,
+                    agent_output,
+                    config_dir / "outputs",
+                    eval_case.get("expected_output", ""),
+                    llm_grader,
+                    pre_state=None,
+                    post_state=None,
+                    should_trigger=should_trigger,
+                )
 
-            grading_path = config_dir / "grading.json"
-            with open(grading_path, "w") as f:
-                json.dump(grading.model_dump(), f, indent=2)
+                grading_path = config_dir / "grading.json"
+                with open(grading_path, "w") as f:
+                    json.dump(grading.model_dump(), f, indent=2)
 
-            console.print(
-                f"  {eval_dir.name}/{config_dir.name}: {grading.summary.passed}/{grading.summary.total} passed"
-            )
-            updated += 1
+                console.print(
+                    f"  {eval_dir.name}/{agent_dir.name}/{config_dir.name}: "
+                    f"{grading.summary.passed}/{grading.summary.total} passed"
+                )
+                updated += 1
 
     if recompute_benchmark:
         from skill_eval.runner import compute_benchmark
@@ -321,29 +328,56 @@ def grade(
 
 
 def _collect_results(workspace: Path) -> dict[str, dict]:
+    """Reconstruct per-run results for benchmark recompute.
+
+    Reads ``run_meta.json`` written by ``_run_single`` to recover the real
+    agent and ``with_skill`` flag (the directory layout now includes the
+    agent, but we use the metadata file as the source of truth). Falls back
+    to ``"unknown"`` only if the metadata is missing, and disambiguates
+    collisions by including the agent directory name in the key.
+    """
     results: dict[str, dict] = {}
     for eval_dir in sorted(workspace.glob("eval-*")):
-        for config_dir in sorted(eval_dir.iterdir()):
-            if not config_dir.is_dir():
+        for agent_dir in sorted(eval_dir.iterdir()):
+            if not agent_dir.is_dir():
                 continue
-            grading_path = config_dir / "grading.json"
-            timing_path = config_dir / "timing.json"
-            if not grading_path.exists() or not timing_path.exists():
-                continue
-            with open(grading_path) as f:
-                grading = json.load(f)
-            with open(timing_path) as f:
-                timing = json.load(f)
-            parts = config_dir.name.split("-")
-            agent = parts[0] if parts else "unknown"
-            with_skill = config_dir.name == "with_skill"
-            key = f"{eval_dir.name}-unknown-{config_dir.name}"
-            results[key] = {
-                "agent": agent,
-                "with_skill": with_skill,
-                "timing": timing,
-                "grading": grading,
-            }
+            for config_dir in sorted(agent_dir.iterdir()):
+                if not config_dir.is_dir():
+                    continue
+                grading_path = config_dir / "grading.json"
+                timing_path = config_dir / "timing.json"
+                if not grading_path.exists() or not timing_path.exists():
+                    continue
+                with open(grading_path) as f:
+                    grading = json.load(f)
+                with open(timing_path) as f:
+                    timing = json.load(f)
+
+                meta_path = config_dir / "run_meta.json"
+                agent = "unknown"
+                with_skill = config_dir.name == "with_skill"
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text())
+                        agent = meta.get("agent", "unknown")
+                        with_skill = bool(meta.get("with_skill", with_skill))
+                    except (json.JSONDecodeError, ValueError):
+                        console.print(f"  [yellow]Could not parse {meta_path}; marking agent as unknown[/yellow]")
+                else:
+                    console.print(f"  [yellow]No run_meta.json in {config_dir}; agent identity unknown[/yellow]")
+
+                # Include agent_dir.name in the key to avoid collisions when
+                # multiple configs in the same eval are missing metadata.
+                key = f"{eval_dir.name}-{agent}-{agent_dir.name}-{config_dir.name}"
+                if key in results:
+                    console.print(f"  [yellow]Duplicate result key {key} for {config_dir}; skipping[/yellow]")
+                    continue
+                results[key] = {
+                    "agent": agent,
+                    "with_skill": with_skill,
+                    "timing": timing,
+                    "grading": grading,
+                }
     return results
 
 
@@ -409,19 +443,22 @@ def report(
 
         for eval_dir in sorted(iter_dir.glob("eval-*")):
             console.print(f"\n[bold]{eval_dir.name}[/bold]")
-            for config_dir in sorted(eval_dir.iterdir()):
-                if not config_dir.is_dir():
+            for agent_dir in sorted(eval_dir.iterdir()):
+                if not agent_dir.is_dir():
                     continue
-                grading_path = config_dir / "grading.json"
-                if grading_path.exists():
-                    with open(grading_path) as f:
-                        grading = json.load(f)
-                    summary = grading.get("summary", {})
-                    console.print(
-                        f"  {config_dir.name}: "
-                        f"{summary.get('passed', 0)}/{summary.get('total', 0)} passed "
-                        f"({summary.get('pass_rate', 0):.0%})"
-                    )
+                for config_dir in sorted(agent_dir.iterdir()):
+                    if not config_dir.is_dir():
+                        continue
+                    grading_path = config_dir / "grading.json"
+                    if grading_path.exists():
+                        with open(grading_path) as f:
+                            grading = json.load(f)
+                        summary = grading.get("summary", {})
+                        console.print(
+                            f"  {agent_dir.name}/{config_dir.name}: "
+                            f"{summary.get('passed', 0)}/{summary.get('total', 0)} passed "
+                            f"({summary.get('pass_rate', 0):.0%})"
+                        )
 
 
 @app.command()

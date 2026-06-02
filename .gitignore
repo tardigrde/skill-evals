@@ -7,3 +7,4 @@ dist/
 build/
 eval-workspace/
 .env
+uv.lock

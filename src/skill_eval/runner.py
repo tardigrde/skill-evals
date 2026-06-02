@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -22,6 +23,7 @@ from skill_eval.models import (
     DeltaStats,
     EvalCase,
     EvalSuite,
+    RunMeta,
     StatsPair,
 )
 from skill_eval.skills import SkillInstaller
@@ -100,21 +102,22 @@ class EvalRunner:
                         agent_type,
                         with_skill,
                         iteration_dir,
+                        iteration,
                     )
                     futures[future] = (eval_case, agent_type, with_skill)
 
-                for future in as_completed(futures):
-                    eval_case, agent_type, with_skill = futures[future]
-                    key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}"
-                    try:
-                        result = future.result()
-                        results[key] = result["summary"]
-                        if result.get("cleanup_entry"):
-                            cleanup_entries.append(result["cleanup_entry"])
-                    except Exception as e:
-                        console.print(f"[red]Error running {key}: {e}[/red]")
-                        results[key] = {"error": str(e)}
-                    progress.advance(task_id)
+            for future in as_completed(futures):
+                eval_case, agent_type, with_skill = futures[future]
+                key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}"
+                try:
+                    result = future.result()
+                    results[key] = result["summary"]
+                    if result.get("cleanup_entry"):
+                        cleanup_entries.append(result["cleanup_entry"])
+                except Exception as e:
+                    console.print(f"[red]Error running {key}: {e}[/red]")
+                    results[key] = {"error": str(e)}
+                progress.advance(task_id)
 
         benchmark = self._compute_benchmark(results, iteration_dir)
 
@@ -141,7 +144,7 @@ class EvalRunner:
         all_branches: list[str] = []
         all_prs: list[int] = []
         for entry in entries:
-            for b in entry.branches:
+            for b in entry.remote_branches:
                 if b not in all_branches:
                     all_branches.append(b)
             for p in entry.pr_numbers:
@@ -153,7 +156,7 @@ class EvalRunner:
             source_repo_slug=(
                 self.source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git") if self.source_repo else None
             ),
-            branches=all_branches,
+            remote_branches=all_branches,
             pr_numbers=all_prs,
             workspaces=[str(p) for p in self.workspace_mgr.workspaces],
         )
@@ -164,10 +167,12 @@ class EvalRunner:
         agent_type: AgentType,
         with_skill: bool,
         iteration_dir: Path,
+        iteration: int = 1,
     ) -> dict:
         eval_slug = f"eval-{eval_case.id}"
         config_slug = "with_skill" if with_skill else "without_skill"
-        output_dir = iteration_dir / eval_slug / config_slug / "outputs"
+        agent_slug = agent_type.value
+        output_dir = iteration_dir / eval_slug / agent_slug / config_slug / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         fixture_files = {}
@@ -185,9 +190,8 @@ class EvalRunner:
             self.skill_installer.install(workspace, agent_type)
 
         if eval_case.stage_files and fixture_files:
-            subprocess_imports = __import__("subprocess")
             for name in fixture_files:
-                subprocess_imports.run(
+                subprocess.run(
                     ["git", "add", "--", name],
                     cwd=workspace,
                     capture_output=True,
@@ -216,6 +220,19 @@ class EvalRunner:
         with open(timing_path, "w") as f:
             json.dump(timing.model_dump(), f, indent=2)
 
+        run_meta = RunMeta(
+            eval_id=eval_case.id,
+            agent=agent_type.value,
+            with_skill=with_skill,
+            iteration=iteration,
+            skill_name=self.suite.skill_name,
+            source_repo=self.source_repo,
+            run_id=self.run_id,
+        )
+        meta_path = output_dir.parent / "run_meta.json"
+        with open(meta_path, "w") as f:
+            json.dump(run_meta.model_dump(), f, indent=2)
+
         grading = grade_assertions(
             eval_case.assertions,
             agent_output,
@@ -232,7 +249,7 @@ class EvalRunner:
         with open(grading_path, "w") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
-        cleanup_entry = self._build_cleanup_entry(eval_case, agent_type, with_skill, pre_state, post_state)
+        cleanup_entry = self._build_cleanup_entry(pre_state, post_state)
 
         if os.environ.get("SKILL_EVAL_KEEP_WORKSPACE"):
             console.print(f"  [dim]Workspace kept: {workspace}[/dim]")
@@ -266,22 +283,19 @@ class EvalRunner:
 
     def _build_cleanup_entry(
         self,
-        eval_case: EvalCase,
-        agent_type: AgentType,
-        with_skill: bool,
         pre_state,
         post_state,
     ) -> CleanupManifest:
-        pre_branches = set(pre_state.local_branches)
-        post_branches = set(post_state.local_branches)
-        new_branches = sorted(post_branches - pre_branches)
+        pre_remote = set(pre_state.remote_branches)
+        post_remote = set(post_state.remote_branches)
+        new_remote_branches = sorted(post_remote - pre_remote)
 
         pre_pr_numbers = {p.get("number") for p in pre_state.open_prs}
         new_pr_numbers = [p.get("number") for p in post_state.open_prs if p.get("number") not in pre_pr_numbers]
 
         return CleanupManifest(
             source_repo=self.source_repo,
-            branches=new_branches,
+            remote_branches=new_remote_branches,
             pr_numbers=[n for n in new_pr_numbers if n is not None],
         )
 

@@ -237,7 +237,7 @@ class TestStateCapture:
                 iteration_dir=tmp_path / "iter",
             )
 
-        output_dir = tmp_path / "iter" / "eval-implicit" / "with_skill" / "outputs"
+        output_dir = tmp_path / "iter" / "eval-implicit" / "opencode" / "with_skill" / "outputs"
         assert (output_dir / "pre_state.json").exists()
         assert (output_dir / "post_state.json").exists()
         post = json.loads((output_dir / "post_state.json").read_text())
@@ -259,7 +259,7 @@ class TestCleanupScope:
         manifest = CleanupManifest(
             source_repo="https://github.com/foo/bar.git",
             source_repo_slug="foo/bar",
-            branches=["feature/eval-1"],
+            remote_branches=["feature/eval-1"],
             pr_numbers=[123],
         )
 
@@ -283,9 +283,58 @@ class TestCleanupScope:
             calls.append(cmd)
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        manifest = CleanupManifest(branches=["x"], pr_numbers=[1])
+        manifest = CleanupManifest(remote_branches=["x"], pr_numbers=[1])
         _cleanup_manifest(manifest, source_repo=None)
         assert calls == [], f"Expected no subprocess calls without source repo, got {calls}"
+
+    def test_cleanup_uses_remote_branch_delta_not_local(self, tmp_path):
+        """A branch in local delta that ALSO existed in pre remote branches
+        must NOT appear in the cleanup manifest."""
+        from skill_eval.git_state import GitStateSnapshot
+        from skill_eval.runner import EvalRunner
+
+        skill_path = tmp_path / "skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
+        )
+
+        evals_p = tmp_path / "evals.json"
+        evals_p.write_text(json.dumps({"skill_name": "demo", "evals": []}))
+
+        runner = EvalRunner(
+            skill_path=skill_path,
+            evals_path=evals_p,
+            workspace_base=tmp_path / "ws",
+            agents=[],
+            with_baseline=False,
+        )
+
+        pre = GitStateSnapshot(local_branches=[], remote_branches=["feature/shared"], current_branch="main")
+        post = GitStateSnapshot(
+            local_branches=["feature/shared"],
+            remote_branches=["feature/shared"],
+            current_branch="feature/shared",
+        )
+        entry = runner._build_cleanup_entry(
+            pre_state=pre,
+            post_state=post,
+        )
+        # Local delta has feature/shared, but it was in pre.remote_branches.
+        # The cleanup manifest must NOT record it for remote deletion.
+        assert entry.remote_branches == []
+
+        pre2 = GitStateSnapshot(local_branches=[], remote_branches=[], current_branch="main")
+        post2 = GitStateSnapshot(
+            local_branches=["feature/eval-new"],
+            remote_branches=["feature/eval-new"],
+            current_branch="feature/eval-new",
+        )
+        entry2 = runner._build_cleanup_entry(
+            pre_state=pre2,
+            post_state=post2,
+        )
+        assert entry2.remote_branches == ["feature/eval-new"]
 
 
 class TestGradeCommand:
@@ -300,7 +349,7 @@ class TestGradeCommand:
 
         iter_dir = tmp_path / "iter"
         iter_dir.mkdir()
-        eval_dir = iter_dir / "eval-implicit" / "with_skill" / "outputs"
+        eval_dir = iter_dir / "eval-implicit" / "opencode" / "with_skill" / "outputs"
         eval_dir.mkdir(parents=True)
         (eval_dir / "output.txt").write_text("I did it")
         (eval_dir / "pre_state.json").write_text(
@@ -314,6 +363,9 @@ class TestGradeCommand:
                     "commits": ["init"],
                     "remote_names": [],
                     "open_prs": [],
+                    "branch_heads": {"main": "a" * 40},
+                    "remote_branch_heads": {},
+                    "commit_shas": ["a" * 40],
                 }
             )
         )
@@ -328,6 +380,22 @@ class TestGradeCommand:
                     "commits": ["init", "agent work"],
                     "remote_names": ["origin"],
                     "open_prs": [{"number": 7, "headRefName": "feature/agent-branch"}],
+                    "branch_heads": {"main": "a" * 40, "feature/agent-branch": "b" * 40},
+                    "remote_branch_heads": {"feature/agent-branch": "b" * 40},
+                    "commit_shas": ["a" * 40, "b" * 40],
+                }
+            )
+        )
+        (eval_dir.parent / "run_meta.json").write_text(
+            json.dumps(
+                {
+                    "eval_id": "implicit",
+                    "agent": "opencode",
+                    "with_skill": True,
+                    "iteration": 1,
+                    "skill_name": "demo",
+                    "source_repo": None,
+                    "run_id": "abc12345",
                 }
             )
         )
@@ -354,7 +422,7 @@ class TestGradeCommand:
             MockLLM.side_effect = Exception("no key")
             grade(workspace=iter_dir, grader_model="x")
 
-        grading = json.loads((iter_dir / "eval-implicit" / "with_skill" / "grading.json").read_text())
+        grading = json.loads((iter_dir / "eval-implicit" / "opencode" / "with_skill" / "grading.json").read_text())
         assert grading["summary"]["total"] == 3
         assert grading["summary"]["passed"] >= 1
 
@@ -369,34 +437,34 @@ class TestGradeCommand:
 
         iter_dir = tmp_path / "iter"
         iter_dir.mkdir()
-        eval_dir = iter_dir / "eval-negative" / "with_skill" / "outputs"
+        eval_dir = iter_dir / "eval-negative" / "opencode" / "with_skill" / "outputs"
         eval_dir.mkdir(parents=True)
         (eval_dir / "output.txt").write_text("commit abc123 Initial commit")
-        (eval_dir / "pre_state.json").write_text(
+        baseline_state = {
+            "local_branches": ["main"],
+            "remote_branches": [],
+            "current_branch": "main",
+            "head_sha": "a" * 40,
+            "commit_count": 1,
+            "commits": ["init"],
+            "remote_names": [],
+            "open_prs": [],
+            "branch_heads": {"main": "a" * 40},
+            "remote_branch_heads": {},
+            "commit_shas": ["a" * 40],
+        }
+        (eval_dir / "pre_state.json").write_text(json.dumps(baseline_state))
+        (eval_dir / "post_state.json").write_text(json.dumps(baseline_state))
+        (eval_dir.parent / "run_meta.json").write_text(
             json.dumps(
                 {
-                    "local_branches": ["main"],
-                    "remote_branches": [],
-                    "current_branch": "main",
-                    "head_sha": "a" * 40,
-                    "commit_count": 1,
-                    "commits": ["init"],
-                    "remote_names": [],
-                    "open_prs": [],
-                }
-            )
-        )
-        (eval_dir / "post_state.json").write_text(
-            json.dumps(
-                {
-                    "local_branches": ["main"],
-                    "remote_branches": [],
-                    "current_branch": "main",
-                    "head_sha": "a" * 40,
-                    "commit_count": 1,
-                    "commits": ["init"],
-                    "remote_names": [],
-                    "open_prs": [],
+                    "eval_id": "negative",
+                    "agent": "opencode",
+                    "with_skill": True,
+                    "iteration": 1,
+                    "skill_name": "demo",
+                    "source_repo": None,
+                    "run_id": "abc12345",
                 }
             )
         )
@@ -423,9 +491,101 @@ class TestGradeCommand:
             MockLLM.side_effect = Exception("no key")
             grade(workspace=iter_dir, grader_model="x")
 
-        grading = json.loads((eval_dir.parent / "grading.json").read_text())
+        grading = json.loads((iter_dir / "eval-negative" / "opencode" / "with_skill" / "grading.json").read_text())
         # Both should pass because no artifacts were created (skill should not have triggered)
         assert grading["summary"]["passed"] == 2
+
+    def test_grade_recompute_benchmark_uses_run_meta(self, tmp_path, evals_path):
+        """`grade --recompute-benchmark` should recover the real agent name from
+        ``run_meta.json`` and produce benchmark.run_summary keyed by
+        ``<agent>_with_skill`` / ``<agent>_without_skill``."""
+        from skill_eval.cli import grade
+
+        iter_dir = tmp_path / "iter"
+        iter_dir.mkdir()
+
+        baseline_state = {
+            "local_branches": ["main"],
+            "remote_branches": [],
+            "current_branch": "main",
+            "head_sha": "a" * 40,
+            "commit_count": 1,
+            "commits": ["init"],
+            "remote_names": [],
+            "open_prs": [],
+            "branch_heads": {"main": "a" * 40},
+            "remote_branch_heads": {},
+            "commit_shas": ["a" * 40],
+        }
+
+        for agent in ("opencode", "claude-code"):
+            for with_skill in (True, False):
+                config = iter_dir / "eval-implicit" / agent / ("with_skill" if with_skill else "without_skill")
+                (config / "outputs").mkdir(parents=True)
+                (config / "outputs" / "output.txt").write_text("hi")
+                (config / "outputs" / "pre_state.json").write_text(json.dumps(baseline_state))
+                (config / "outputs" / "post_state.json").write_text(json.dumps(baseline_state))
+                (config / "timing.json").write_text(
+                    json.dumps(
+                        {
+                            "total_tokens": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cached_tokens": 0,
+                            "duration_ms": 0,
+                        }
+                    )
+                )
+                (config / "grading.json").write_text(
+                    json.dumps(
+                        {
+                            "assertion_results": [],
+                            "summary": {"passed": 1, "failed": 0, "total": 1, "pass_rate": 1.0},
+                        }
+                    )
+                )
+                (config / "run_meta.json").write_text(
+                    json.dumps(
+                        {
+                            "eval_id": "implicit",
+                            "agent": agent,
+                            "with_skill": with_skill,
+                            "iteration": 1,
+                            "skill_name": "demo",
+                            "source_repo": None,
+                            "run_id": "abc",
+                        }
+                    )
+                )
+
+        # Use a content-contains assertion so regrade produces a 1/1 result
+        meta = {
+            "skill_name": "demo",
+            "evals": [
+                {
+                    "id": "implicit",
+                    "prompt": "x",
+                    "expected_output": "ok",
+                    "assertions": ["The output contains `hi`"],
+                }
+            ],
+            "source_repo": None,
+        }
+        (iter_dir / "evals_meta.json").write_text(json.dumps(meta))
+
+        with patch("skill_eval.cli.LLMGrader") as MockLLM:
+            MockLLM.side_effect = Exception("no key")
+            grade(workspace=iter_dir, grader_model="x", recompute_benchmark=True)
+
+        benchmark = json.loads((iter_dir / "benchmark.json").read_text())
+        run_summary = benchmark.get("run_summary", {})
+        # Both agents should have with_skill and without_skill entries
+        assert "opencode_with_skill" in run_summary
+        assert "opencode_without_skill" in run_summary
+        assert "claude-code_with_skill" in run_summary
+        assert "claude-code_without_skill" in run_summary
+        # Pass rate should be 1.0 (the regrade finds `hi` in the output)
+        assert run_summary["opencode_with_skill"]["pass_rate"]["mean"] == 1.0
 
 
 class TestEvalsMetaPersistence:
@@ -470,3 +630,174 @@ class TestEvalsMetaPersistence:
         meta = json.loads(meta_path.read_text())
         assert meta["skill_name"] == "demo"
         assert any(e["id"] == "implicit" for e in meta["evals"])
+
+
+class TestRunMetaPersistence:
+    def test_run_writes_run_meta_per_config(self, tmp_path, evals_path):
+        """Each config directory should have a run_meta.json describing it."""
+        from skill_eval.runner import EvalRunner
+
+        skill_path = tmp_path / "skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
+        )
+
+        with patch("skill_eval.runner.get_harness") as mock_harness:
+            mock_harness.return_value.run.return_value = (
+                "ok",
+                type(
+                    "T",
+                    (),
+                    {
+                        "model_dump": lambda self: {
+                            "total_tokens": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cached_tokens": 0,
+                            "duration_ms": 0,
+                        }
+                    },
+                )(),
+                "",
+                "",
+            )
+
+            runner = EvalRunner(
+                skill_path=skill_path,
+                evals_path=evals_path,
+                workspace_base=tmp_path / "ws",
+                agents=[AgentType.OPENCODE],
+                with_baseline=True,
+            )
+            iter_dir = runner.run(iteration=1)
+
+        # Each eval has with_skill and without_skill
+        for eval_dir in iter_dir.glob("eval-*"):
+            for agent_dir in eval_dir.iterdir():
+                for config_dir in agent_dir.iterdir():
+                    meta_path = config_dir / "run_meta.json"
+                    assert meta_path.exists(), f"missing {meta_path}"
+                    meta = json.loads(meta_path.read_text())
+                    assert meta["agent"] == "opencode"
+                    assert meta["with_skill"] in (True, False)
+                    assert meta["eval_id"]
+                    assert meta["run_id"]
+
+
+class TestAgentDirectoryLayout:
+    def test_two_agents_produce_separate_output_dirs(self, tmp_path, evals_path):
+        """Two agents running the same eval must produce separate config dirs."""
+        from skill_eval.runner import EvalRunner
+
+        skill_path = tmp_path / "skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
+        )
+
+        with patch("skill_eval.runner.get_harness") as mock_harness:
+            mock_harness.return_value.run.return_value = (
+                "ok",
+                type(
+                    "T",
+                    (),
+                    {
+                        "model_dump": lambda self: {
+                            "total_tokens": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cached_tokens": 0,
+                            "duration_ms": 0,
+                        }
+                    },
+                )(),
+                "",
+                "",
+            )
+
+            runner = EvalRunner(
+                skill_path=skill_path,
+                evals_path=evals_path,
+                workspace_base=tmp_path / "ws",
+                agents=[AgentType.OPENCODE, AgentType.CLAUDE_CODE],
+                with_baseline=False,
+            )
+            iter_dir = runner.run(iteration=1)
+
+        implicit_dir = iter_dir / "eval-implicit"
+        assert (implicit_dir / "opencode" / "with_skill").exists()
+        assert (implicit_dir / "claude-code" / "with_skill").exists()
+        # Each agent should have its own output.txt
+        assert (implicit_dir / "opencode" / "with_skill" / "outputs" / "output.txt").exists()
+        assert (implicit_dir / "claude-code" / "with_skill" / "outputs" / "output.txt").exists()
+
+
+class TestCleanupWorkspaceScope:
+    def test_cleanup_only_removes_manifest_workspaces(self, tmp_path):
+        """Sibling skill-eval-* workspaces not in the manifest must NOT be deleted."""
+        from skill_eval.cli import _cleanup_iteration
+        from skill_eval.models import CleanupManifest
+
+        iter_dir = tmp_path / "iter"
+        iter_dir.mkdir()
+        workspace_base = tmp_path / "ws"
+        workspace_base.mkdir()
+
+        # A workspace recorded in the manifest
+        manifest_ws = workspace_base / "skill-eval-A"
+        manifest_ws.mkdir()
+        (manifest_ws / "file.txt").write_text("x")
+
+        # A sibling workspace NOT in the manifest
+        sibling_ws = workspace_base / "skill-eval-other"
+        sibling_ws.mkdir()
+        (sibling_ws / "file.txt").write_text("x")
+
+        manifest = CleanupManifest(workspaces=[str(manifest_ws)])
+        with open(iter_dir / "cleanup.json", "w") as f:
+            json.dump(manifest.model_dump(), f)
+
+        _cleanup_iteration(iter_dir, workspace_base)
+
+        # Manifest workspace is removed
+        assert not manifest_ws.exists()
+        # Sibling workspace is preserved
+        assert sibling_ws.exists()
+
+    def test_cleanup_without_manifest_skips_workspace_deletion(self, tmp_path):
+        """If cleanup.json is missing, _cleanup_iteration must NOT delete
+        unrecorded workspaces under the workspace base."""
+        from skill_eval.cli import _cleanup_iteration
+
+        iter_dir = tmp_path / "iter"
+        iter_dir.mkdir()
+        workspace_base = tmp_path / "ws"
+        workspace_base.mkdir()
+        sibling_ws = workspace_base / "skill-eval-other"
+        sibling_ws.mkdir()
+        (sibling_ws / "file.txt").write_text("x")
+
+        # No cleanup.json
+        _cleanup_iteration(iter_dir, workspace_base)
+
+        # Sibling workspace must be preserved
+        assert sibling_ws.exists()
+
+
+class TestExampleNegativeControl:
+    def test_negative_control_has_inverted_assertions(self):
+        """The example negative-control eval must include branch/commit/PR
+        assertions so that inverted grading actually catches accidental
+        triggering."""
+        examples_dir = Path(__file__).parent.parent / "examples" / "commit-push-pr" / "evals"
+        with open(examples_dir / "evals.json") as f:
+            data = json.load(f)
+
+        negative = next(e for e in data["evals"] if e["id"] == "negative-control")
+        assert negative["should_trigger"] is False
+        assertions = " ".join(negative["assertions"]).lower()
+        assert "branch" in assertions, "negative-control must assert branch was not created"
+        assert "commit" in assertions, "negative-control must assert commit was not created"
+        assert "pull request" in assertions, "negative-control must assert PR was not created"
+        assert "push" in assertions, "negative-control must assert push did not happen"

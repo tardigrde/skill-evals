@@ -16,8 +16,9 @@ def _run(args: list[str], cwd: Path) -> str:
 def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> GitStateSnapshot:
     """Snapshot the git and PR state of a workspace.
 
-    Captures branches, current HEAD, commit count, recent commits, and (if a
-    source repo is configured) the list of PRs currently open on the remote.
+    Captures branches, current HEAD, commit count, recent commits, full SHAs
+    for branch heads, remote branch heads, and (if a source repo is
+    configured) the list of PRs currently open on the remote.
     """
     raw_branches = _run(["git", "branch", "-a"], workspace).strip().split("\n")
     local_branches: set[str] = set()
@@ -36,8 +37,33 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
     current = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], workspace).strip()
     head = _run(["git", "rev-parse", "HEAD"], workspace).strip()
     count_raw = _run(["git", "rev-list", "--all", "--count"], workspace).strip()
-    log = _run(["git", "log", "--all", "--pretty=format:%h %s"], workspace).strip()
-    commits = [line for line in log.split("\n") if line.strip()]
+
+    sha_log = _run(["git", "log", "--all", "--pretty=format:%H"], workspace).strip()
+    commit_shas = [line for line in sha_log.split("\n") if line.strip()]
+
+    short_log = _run(["git", "log", "--all", "--pretty=format:%h %s"], workspace).strip()
+    commits = [line for line in short_log.split("\n") if line.strip()]
+
+    branch_heads = dict(
+        _parse_for_each_ref(
+            _run(
+                ["git", "for-each-ref", "refs/heads", "--format=%(refname:short) %(objectname)"],
+                workspace,
+            )
+        )
+    )
+
+    remote_for_each = _run(
+        ["git", "for-each-ref", "refs/remotes", "--format=%(refname:short) %(objectname)"],
+        workspace,
+    )
+    remote_branch_heads: dict[str, str] = {}
+    for refname, sha in _parse_for_each_ref(remote_for_each):
+        if "/" in refname:
+            short = refname.split("/", 1)[1]
+            if short != "HEAD":
+                remote_branch_heads[short] = sha
+
     remotes_raw = _run(["git", "remote", "-v"], workspace).strip()
     remote_names = sorted({line.split()[0] for line in remotes_raw.split("\n") if line.strip()})
 
@@ -73,7 +99,22 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
         commits=commits[:20],
         remote_names=remote_names,
         open_prs=open_prs,
+        branch_heads=branch_heads,
+        remote_branch_heads=remote_branch_heads,
+        commit_shas=commit_shas[:50],
     )
+
+
+def _parse_for_each_ref(raw: str) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.rsplit(" ", 1)
+        if len(parts) == 2:
+            out.append((parts[0], parts[1]))
+    return out
 
 
 def state_diff(pre: GitStateSnapshot, post: GitStateSnapshot) -> dict:
@@ -84,23 +125,67 @@ def state_diff(pre: GitStateSnapshot, post: GitStateSnapshot) -> dict:
         {
             "new_branches": [...],
             "new_remote_branches": [...],
+            "current_branch": str,
             "current_branch_changed": bool,
             "head_advanced": bool,
             "new_commits": [...],
+            "new_commit_shas": [...],
             "new_open_prs": [...],
+            "eval_branch": str | None,
+            "eval_branch_pushed": bool,
+            "eval_branch_pushed_matches_head": bool,
         }
     """
     pre_local = set(pre.local_branches)
     pre_remote = set(pre.remote_branches)
     pre_pr_numbers = {p.get("number") for p in pre.open_prs}
 
+    new_branches = sorted(set(post.local_branches) - pre_local)
+    new_remote_branches = sorted(set(post.remote_branches) - pre_remote)
+
+    pre_head = pre.head_sha
+    post_head = post.head_sha
+    head_advanced = bool(pre_head) and bool(post_head) and pre_head != post_head
+
+    pre_sha_set = set(pre.commit_shas)
+    new_commit_shas = [s for s in post.commit_shas if s and s not in pre_sha_set]
+
+    new_commits = [c for c in post.commits if c not in pre.commits]
+
     new_open_prs = [p for p in post.open_prs if p.get("number") not in pre_pr_numbers]
 
+    eval_branch: str | None = None
+    if new_branches:
+        if post.current_branch and post.current_branch in new_branches:
+            eval_branch = post.current_branch
+        else:
+            eval_branch = new_branches[0]
+    elif post.current_branch != pre.current_branch and post.current_branch:
+        pre_local_set = set(pre.local_branches)
+        pre_remote_set = set(pre.remote_branches)
+        if post.current_branch in pre_local_set or post.current_branch in pre_remote_set:
+            eval_branch = None
+        else:
+            eval_branch = post.current_branch
+
+    eval_branch_pushed = False
+    eval_branch_pushed_matches_head = False
+    if eval_branch and eval_branch in post.remote_branch_heads:
+        eval_branch_pushed = True
+        pushed_sha = post.remote_branch_heads.get(eval_branch)
+        if pushed_sha == post_head:
+            eval_branch_pushed_matches_head = True
+
     return {
-        "new_branches": sorted(set(post.local_branches) - pre_local),
-        "new_remote_branches": sorted(set(post.remote_branches) - pre_remote),
+        "new_branches": new_branches,
+        "new_remote_branches": new_remote_branches,
+        "current_branch": post.current_branch,
         "current_branch_changed": pre.current_branch != post.current_branch,
-        "head_advanced": pre.head_sha != post.head_sha and bool(post.head_sha),
-        "new_commits": [c for c in post.commits if c not in pre.commits],
+        "head_advanced": head_advanced,
+        "new_commits": new_commits,
+        "new_commit_shas": new_commit_shas,
         "new_open_prs": new_open_prs,
+        "eval_branch": eval_branch,
+        "eval_branch_pushed": eval_branch_pushed,
+        "eval_branch_pushed_matches_head": eval_branch_pushed_matches_head,
     }

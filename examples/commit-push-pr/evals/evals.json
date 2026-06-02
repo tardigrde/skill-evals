@@ -43,6 +43,10 @@
       "files": [],
       "should_trigger": false,
       "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "Changes were pushed to remote",
+        "A pull request was created",
         "The output contains the word `commit` or `Initial`"
       ]
     },
