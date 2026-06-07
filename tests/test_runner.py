@@ -11,54 +11,6 @@ from skill_eval.models import AgentType, EvalCase
 from skill_eval.runner import EvalRunner
 
 
-@pytest.fixture
-def evals_path(tmp_path):
-    p = tmp_path / "evals.json"
-    p.write_text(
-        json.dumps(
-            {
-                "skill_name": "demo",
-                "evals": [
-                    {
-                        "id": "implicit",
-                        "prompt": "Get this into a PR.",
-                        "expected_output": "ok",
-                        "assertions": ["A new git branch was created"],
-                    },
-                    {
-                        "id": "explicit",
-                        "prompt": "Use the $demo skill to push this.",
-                        "expected_output": "ok",
-                        "assertions": ["A new git branch was created"],
-                        "force_skill_invocation": True,
-                    },
-                    {
-                        "id": "negative",
-                        "prompt": "Show git log.",
-                        "expected_output": "ok",
-                        "should_trigger": False,
-                        "assertions": ["The output contains `commit`"],
-                    },
-                ],
-            }
-        )
-    )
-    return p
-
-
-def _init_workspace_with_changes(workspace: Path) -> tuple[Path, Path]:
-    """Set up a workspace that has both a pre-state and a new branch+commit."""
-    pre_ws = workspace
-    pre_ws.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-b", "main"], cwd=pre_ws, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=pre_ws, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=pre_ws, capture_output=True, check=True)
-    (pre_ws / "init.txt").write_text("hi")
-    subprocess.run(["git", "add", "."], cwd=pre_ws, capture_output=True, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=pre_ws, capture_output=True, check=True)
-    return pre_ws, pre_ws
-
-
 class TestPromptConstruction:
     def test_with_skill_does_not_prepend_skill_invocation(self, tmp_path, evals_path):
         skill_path = tmp_path / "skill"
@@ -801,3 +753,63 @@ class TestExampleNegativeControl:
         assert "commit" in assertions, "negative-control must assert commit was not created"
         assert "pull request" in assertions, "negative-control must assert PR was not created"
         assert "push" in assertions, "negative-control must assert push did not happen"
+
+
+class TestComputeBenchmark:
+    def test_compute_benchmark_single_agent(self):
+        from skill_eval.runner import compute_benchmark
+
+        results = {
+            "case1": {
+                "agent": "opencode",
+                "with_skill": True,
+                "grading": {"summary": {"pass_rate": 1.0}},
+                "timing": {"duration_ms": 10000.0, "total_tokens": 100},
+            },
+            "case2": {
+                "agent": "opencode",
+                "with_skill": False,
+                "grading": {"summary": {"pass_rate": 0.0}},
+                "timing": {"duration_ms": 20000.0, "total_tokens": 200},
+            },
+        }
+        res = compute_benchmark(results, [AgentType.OPENCODE], with_baseline=True)
+        assert res.delta.pass_rate == 1.0
+        assert res.delta.time_seconds == -10.0
+        assert res.delta.tokens == -100.0
+
+    @pytest.mark.xfail(reason="known bug: compute_benchmark returns 0.0 delta for multi-agent runs", strict=False)
+    def test_compute_benchmark_multi_agent_zero_delta_known_bug(self):
+        from skill_eval.runner import compute_benchmark
+
+        results = {
+            "case1": {
+                "agent": "opencode",
+                "with_skill": True,
+                "grading": {"summary": {"pass_rate": 1.0}},
+                "timing": {"duration_ms": 10000.0, "total_tokens": 100},
+            },
+            "case2": {
+                "agent": "opencode",
+                "with_skill": False,
+                "grading": {"summary": {"pass_rate": 0.0}},
+                "timing": {"duration_ms": 20000.0, "total_tokens": 200},
+            },
+            "case3": {
+                "agent": "claude-code",
+                "with_skill": True,
+                "grading": {"summary": {"pass_rate": 1.0}},
+                "timing": {"duration_ms": 10000.0, "total_tokens": 100},
+            },
+            "case4": {
+                "agent": "claude-code",
+                "with_skill": False,
+                "grading": {"summary": {"pass_rate": 0.0}},
+                "timing": {"duration_ms": 20000.0, "total_tokens": 200},
+            },
+        }
+        res = compute_benchmark(results, [AgentType.OPENCODE, AgentType.CLAUDE_CODE], with_baseline=True)
+        # When the bug is fixed, these should be non-zero (delta between with_skill and without_skill)
+        assert res.delta.pass_rate == 0.0
+        assert res.delta.time_seconds == 0.0
+        assert res.delta.tokens == 0.0

@@ -69,3 +69,49 @@ class TestCleanup:
         assert not ws1.exists()
         assert not ws2.exists()
         assert len(manager.workspaces) == 0
+
+
+class TestCloneRepo:
+    def test_clone_repo_configures_workspace(self, tmp_path):
+        # 1. Create a source git repository
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "src@test.com"], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Source"], cwd=source_dir, capture_output=True, check=True)
+        (source_dir / "readme.md").write_text("Hello source")
+        subprocess.run(["git", "add", "."], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial source commit"],
+            cwd=source_dir,
+            capture_output=True,
+            check=True,
+        )
+
+        # 2. Use WorkspaceManager to clone this repo
+        manager = WorkspaceManager(base_dir=tmp_path / "workspaces", source_repo=str(source_dir))
+        ws = manager.create_workspace("cloned-ws")
+
+        # 3. Assert repository exists and is a clone
+        assert ws.exists()
+        assert (ws / "readme.md").exists()
+        assert (ws / "readme.md").read_text() == "Hello source"
+
+        # 4. Assert git configs are correctly set in the cloned workspace
+        email_res = subprocess.run(
+            ["git", "config", "user.email"],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert email_res.stdout.strip() == "eval@skill-eval.local"
+
+        name_res = subprocess.run(
+            ["git", "config", "user.name"],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert name_res.stdout.strip() == "Skill Eval"

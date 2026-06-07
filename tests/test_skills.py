@@ -85,3 +85,20 @@ class TestUninstall:
     def test_no_error_if_not_installed(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         installer.uninstall(workspace, AgentType.OPENCODE)
+
+    def test_removes_empty_parent_directory(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        installer.install(workspace, AgentType.OPENCODE)
+        parent_dir = workspace / ".opencode" / "skills"
+        assert parent_dir.exists()
+        installer.uninstall(workspace, AgentType.OPENCODE)
+        assert not parent_dir.exists()
+
+    def test_keeps_parent_directory_if_not_empty(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        installer.install(workspace, AgentType.OPENCODE)
+        parent_dir = workspace / ".opencode" / "skills"
+        (parent_dir / "other-file.txt").write_text("hello")
+        installer.uninstall(workspace, AgentType.OPENCODE)
+        assert parent_dir.exists()
+        assert (parent_dir / "other-file.txt").exists()
