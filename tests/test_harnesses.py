@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, OpenCodeHarness
+from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
 
 
 class TestOpenCodeHarnessParseOutput:
@@ -106,3 +106,27 @@ class TestCodexHarnessParseOutput:
         output, timing = harness.parse_output("", "")
         assert output == ""
         assert timing.total_tokens == 0
+
+
+class TestFakeHarness:
+    def test_run_formats_when_fake_skill_is_installed(self, tmp_path):
+        skill_dir = tmp_path / ".fake" / "skills" / "format-json"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Format JSON")
+
+        harness = FakeHarness(tmp_path)
+        output, timing, stdout, stderr = harness.run("Format JSON", tmp_path / "outputs")
+
+        assert "formatted-json-ok" in output
+        assert stdout == output
+        assert stderr == ""
+        assert timing.total_tokens == 1
+
+    def test_run_baseline_does_not_format_without_skill(self, tmp_path):
+        harness = FakeHarness(tmp_path)
+        output, timing, stdout, stderr = harness.run("Format JSON", tmp_path / "outputs")
+
+        assert "formatted-json-ok" not in output
+        assert stdout == output
+        assert stderr == ""
+        assert timing.total_tokens == 1
