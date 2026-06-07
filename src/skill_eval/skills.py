@@ -9,6 +9,7 @@ SKILL_PATHS = {
     AgentType.OPENCODE: [".opencode/skills"],
     AgentType.CLAUDE_CODE: [".claude/skills"],
     AgentType.CODEX: [".codex/skills"],
+    AgentType.FAKE: [".fake/skills"],
 }
 
 

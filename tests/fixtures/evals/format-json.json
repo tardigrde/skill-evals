@@ -1,0 +1,32 @@
+{
+  "skill_name": "format-json",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Format {\"formatted\":true,\"status\":\"formatted-json-ok\"} as JSON.",
+      "expected_output": "Pretty JSON containing formatted-json-ok",
+      "force_skill_invocation": true,
+      "assertions": [
+        "The output contains `formatted-json-ok`"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "Inspect the repository and do not change git state.",
+      "expected_output": "No new branch or commit should be created.",
+      "should_trigger": false,
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created"
+      ]
+    },
+    {
+      "id": "content-contains",
+      "prompt": "Format {\"status\":\"formatted-json-ok\"}.",
+      "expected_output": "The output includes formatted-json-ok",
+      "assertions": [
+        "The output contains `formatted-json-ok`"
+      ]
+    }
+  ]
+}

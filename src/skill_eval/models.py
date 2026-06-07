@@ -11,6 +11,7 @@ class AgentType(str, Enum):
     OPENCODE = "opencode"
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"
+    FAKE = "fake"
 
 
 class EvalCase(BaseModel):

@@ -17,8 +17,9 @@ from skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
 from skill_eval.models import AgentType, CleanupManifest  # noqa: E402
 from skill_eval.runner import EvalRunner  # noqa: E402
 
-app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, and Codex")
+app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake")
 console = Console()
+AGENT_CHOICES = ", ".join(t.value for t in AgentType)
 
 
 @app.command()
@@ -29,7 +30,7 @@ def run(
         ["opencode"],
         "--agent",
         "-a",
-        help="Agent(s) to evaluate: opencode, claude-code, codex",
+        help=f"Agent(s) to evaluate: {AGENT_CHOICES}",
     ),
     workspace: Path = typer.Option(
         Path.cwd() / "eval-workspace",
@@ -62,7 +63,7 @@ def run(
         try:
             agent_types.append(AgentType(a))
         except ValueError:
-            console.print(f"[red]Unknown agent: {a}. Choose from: opencode, claude-code, codex[/red]")
+            console.print(f"[red]Unknown agent: {a}. Choose from: {AGENT_CHOICES}[/red]")
             raise typer.Exit(1)
 
     runner = EvalRunner(

@@ -190,10 +190,41 @@ class CodexHarness(AgentHarness):
         return "\n".join(messages), timing
 
 
+class FakeHarness(AgentHarness):
+    agent_type = AgentType.FAKE
+
+    def build_command(self, prompt: str, output_dir: Path) -> list[str]:
+        return ["fake-agent", prompt]
+
+    def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
+        timing = TimingData(total_tokens=1, input_tokens=1, duration_ms=1)
+        return stdout, timing
+
+    def run(self, prompt: str, output_dir: Path) -> tuple[str, TimingData, str, str]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        skill_installed = any((self.workspace / ".fake" / "skills").glob("*/SKILL.md"))
+        if skill_installed and ("format" in prompt.lower() or "$format-json" in prompt.lower()):
+            final_output = '{\n  "formatted": true,\n  "status": "formatted-json-ok"\n}'
+        else:
+            final_output = "fake-agent baseline output: no formatting performed"
+
+        stdout = final_output
+        stderr = ""
+        timing = TimingData(total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1)
+
+        with open(output_dir / "stdout.log", "w") as f:
+            f.write(stdout)
+        with open(output_dir / "stderr.log", "w") as f:
+            f.write(stderr)
+
+        return final_output, timing, stdout, stderr
+
+
 HARNESSES: dict[AgentType, type[AgentHarness]] = {
     AgentType.OPENCODE: OpenCodeHarness,
     AgentType.CLAUDE_CODE: ClaudeCodeHarness,
     AgentType.CODEX: CodexHarness,
+    AgentType.FAKE: FakeHarness,
 }
 
 

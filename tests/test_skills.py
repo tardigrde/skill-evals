@@ -55,6 +55,12 @@ class TestInstall:
         assert result == workspace / ".codex" / "skills" / "my-skill"
         assert (workspace / ".codex" / "skills" / "my-skill" / "SKILL.md").exists()
 
+    def test_installs_to_fake(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        result = installer.install(workspace, AgentType.FAKE)
+        assert result == workspace / ".fake" / "skills" / "my-skill"
+        assert (workspace / ".fake" / "skills" / "my-skill" / "SKILL.md").exists()
+
     def test_copies_extra_files(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         installer.install(workspace, AgentType.OPENCODE)
