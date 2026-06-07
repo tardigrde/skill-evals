@@ -278,6 +278,23 @@ class TestCheckGitCommit:
         result = grader_with_state._check_git_commit("A git commit was created", diff, should_trigger=False)
         assert result.passed
 
+    def test_negative_control_passes_when_only_head_moves(self, grader):
+        diff = {
+            "new_branches": [],
+            "new_remote_branches": [],
+            "current_branch": "feature/existing",
+            "current_branch_changed": True,
+            "head_advanced": True,
+            "new_commits": [],
+            "new_commit_shas": [],
+            "new_open_prs": [],
+            "eval_branch": None,
+        }
+        post = GitStateSnapshot(head_sha="b" * 40)
+        grader_with_state = DeterministicGrader(post_state=post)
+        result = grader_with_state._check_git_commit("A git commit was created", diff, should_trigger=False)
+        assert result.passed
+
     def test_checking_out_existing_branch_does_not_count_as_new_commit(self, grader, git_workspace):
         """Regression: agent checks out an existing branch, HEAD changes (different
         SHA) but no new commit is created. The commit assertion must fail."""

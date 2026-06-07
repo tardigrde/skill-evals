@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from skill_eval.git_state import capture_git_state, state_diff
+from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
 from skill_eval.models import GitStateSnapshot
 
 
@@ -102,3 +102,52 @@ class TestCaptureGitStateFullShas:
         assert all(len(s) == 40 for s in snap.commit_shas)
         assert "main" in snap.branch_heads
         assert snap.branch_heads["main"] == snap.head_sha
+
+
+class TestGitHubRepoSlug:
+    def test_parses_https_clone_url(self):
+        assert github_repo_slug("https://github.com/owner/repo.git") == "owner/repo"
+
+    def test_parses_ssh_clone_url(self):
+        assert github_repo_slug("git@github.com:owner/repo.git") == "owner/repo"
+
+    def test_parses_ssh_url(self):
+        assert github_repo_slug("ssh://git@github.com/owner/repo.git") == "owner/repo"
+
+    def test_rejects_non_github_url(self):
+        assert github_repo_slug("https://example.com/owner/repo.git") is None
+
+    def test_capture_uses_normalized_slug_for_gh(self, tmp_path, monkeypatch):
+        gh_calls: list[list[str]] = []
+        sha = "a" * 40
+
+        def fake_run(args, cwd):
+            if args[0] == "gh":
+                gh_calls.append(args)
+                return "[]"
+            if args[:3] == ["git", "branch", "-a"]:
+                return "* main\n"
+            if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                return "main\n"
+            if args[:2] == ["git", "rev-parse"]:
+                return f"{sha}\n"
+            if args[:3] == ["git", "rev-list", "--all"]:
+                return "1\n"
+            if args[:3] == ["git", "log", "--all"] and "%H" in args[-1]:
+                return sha
+            if args[:3] == ["git", "log", "--all"]:
+                return "aaaaaaa init"
+            if args[:3] == ["git", "for-each-ref", "refs/heads"]:
+                return f"main {sha}\n"
+            if args[:3] == ["git", "for-each-ref", "refs/remotes"]:
+                return ""
+            if args[:2] == ["git", "remote"]:
+                return "origin git@github.com:owner/repo.git (fetch)\n"
+            return ""
+
+        monkeypatch.setattr("skill_eval.git_state._run", fake_run)
+
+        capture_git_state(tmp_path, source_repo="git@github.com:owner/repo.git")
+
+        assert gh_calls
+        assert gh_calls[0][gh_calls[0].index("--repo") + 1] == "owner/repo"

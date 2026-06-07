@@ -9,7 +9,7 @@ from typing import Optional
 
 from openai import OpenAI, OpenAIError
 
-from skill_eval.git_state import capture_git_state, state_diff
+from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
 from skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
 
 
@@ -34,7 +34,7 @@ def _fetch_pr_for_branch(branch: str, source_repo: str) -> Optional[dict]:
     """
     if not source_repo or not branch:
         return None
-    slug = source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git")
+    slug = github_repo_slug(source_repo)
     if not slug:
         return None
     try:
@@ -383,7 +383,7 @@ class DeterministicGrader:
         post_head = self.post_state.head_sha if self.post_state else ""
 
         if inverted:
-            if advanced or new_commit_shas or new_commits:
+            if new_commit_shas or new_commits:
                 return AssertionResult(
                     text=assertion,
                     passed=False,

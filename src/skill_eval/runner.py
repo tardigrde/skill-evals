@@ -12,7 +12,7 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from skill_eval.git_state import capture_git_state
+from skill_eval.git_state import capture_git_state, github_repo_slug
 from skill_eval.graders import LLMGrader, grade_assertions
 from skill_eval.harnesses import get_harness
 from skill_eval.models import (
@@ -153,9 +153,7 @@ class EvalRunner:
 
         return CleanupManifest(
             source_repo=self.source_repo,
-            source_repo_slug=(
-                self.source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git") if self.source_repo else None
-            ),
+            source_repo_slug=github_repo_slug(self.source_repo),
             remote_branches=all_branches,
             pr_numbers=all_prs,
             workspaces=[str(p) for p in self.workspace_mgr.workspaces],

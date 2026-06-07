@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from skill_eval.models import GitStateSnapshot
 
@@ -11,6 +12,40 @@ from skill_eval.models import GitStateSnapshot
 def _run(args: list[str], cwd: Path) -> str:
     result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
     return result.stdout or ""
+
+
+def github_repo_slug(source_repo: Optional[str]) -> Optional[str]:
+    """Return ``owner/repo`` for GitHub clone URLs or existing slugs."""
+    if not source_repo:
+        return None
+
+    repo = source_repo.strip().rstrip("/")
+    if not repo:
+        return None
+
+    if "://" not in repo and ":" in repo:
+        host_part, path = repo.split(":", 1)
+        if host_part.split("@")[-1].lower() == "github.com":
+            return _slug_from_repo_path(path)
+
+    parsed = urlparse(repo)
+    if parsed.netloc:
+        if (parsed.hostname or "").lower() != "github.com":
+            return None
+        return _slug_from_repo_path(parsed.path)
+
+    if repo.lower().startswith("github.com/"):
+        return _slug_from_repo_path(repo[len("github.com/") :])
+
+    return _slug_from_repo_path(repo)
+
+
+def _slug_from_repo_path(path: str) -> Optional[str]:
+    clean = path.split("?", 1)[0].split("#", 1)[0].strip("/").removesuffix(".git")
+    parts = [part for part in clean.split("/") if part]
+    if len(parts) != 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
 
 
 def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> GitStateSnapshot:
@@ -69,26 +104,27 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
 
     open_prs: list[dict] = []
     if source_repo:
-        slug = source_repo.rstrip("/").split("github.com/")[-1].removesuffix(".git")
-        prs_raw = _run(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                slug,
-                "--state",
-                "all",
-                "--json",
-                "number,headRefName,baseRefName,url,state",
-            ],
-            Path.cwd(),
-        )
-        if prs_raw.strip():
-            try:
-                open_prs = json.loads(prs_raw)
-            except json.JSONDecodeError:
-                open_prs = []
+        slug = github_repo_slug(source_repo)
+        if slug:
+            prs_raw = _run(
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    slug,
+                    "--state",
+                    "all",
+                    "--json",
+                    "number,headRefName,baseRefName,url,state",
+                ],
+                Path.cwd(),
+            )
+            if prs_raw.strip():
+                try:
+                    open_prs = json.loads(prs_raw)
+                except json.JSONDecodeError:
+                    open_prs = []
 
     return GitStateSnapshot(
         local_branches=sorted(local_branches),
