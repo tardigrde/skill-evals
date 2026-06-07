@@ -31,6 +31,12 @@ Or run directly via uv without activating the venv:
 uv run --extra dev skill-eval --help
 ```
 
+You can also run the module directly without installing the console script:
+
+```bash
+python -m skill_eval --help
+```
+
 ## Development
 
 Run tests and lints with the dev extras:
@@ -81,7 +87,7 @@ my-skill/
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
-        "A pull request was created"
+        "A pull request was created or the PR URL is mentioned in the output"
       ]
     },
     {
@@ -92,13 +98,16 @@ my-skill/
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
+        "Changes were pushed to remote",
         "A pull request was created",
-        "The output contains the word `commit`"
+        "The output contains the word `commit` or `Initial`"
       ]
     }
   ]
 }
 ```
+
+The negative-control assertions are intentionally broad: they check branch, commit, push, PR, **and** content to ensure the skill did not accidentally trigger. The `should_trigger: false` flag inverts the deterministic checks so they pass only when those artifacts are absent.
 
 ### 3. Run evaluations
 
@@ -181,6 +190,28 @@ Only closes PRs and deletes remote branches that were recorded in `cleanup.json`
 ```bash
 skill-eval init my-skill --output ./skills
 ```
+
+### `--version` - Show version
+
+```bash
+skill-eval --version
+```
+
+## Directory Convention: `examples/` vs `skills/`
+
+The repo uses two top-level directories for a reason:
+
+- **`skills/`** — Contains the agent skill definitions (`SKILL.md` files). These are the artifacts being evaluated. Pass a skill directory to `--skill`.
+- **`examples/`** — Contains eval suites (`evals.json` + fixture files). These define the test cases, prompts, and assertions. Pass an evals file to `--evals`.
+
+The separation lets you test the same skill against different eval suites, or the same eval suite against different versions of a skill. The `init` command creates the `examples/` layout:
+
+```bash
+skill-eval init my-skill            # creates ./my-skill/evals/
+skill-eval init my-skill --output ./examples  # creates ./examples/my-skill/evals/
+```
+
+The `skills/` directory is typically managed manually or by your skill authoring workflow.
 
 ## Workspace Structure
 
@@ -318,6 +349,47 @@ skill-eval run \
 4. Update SKILL.md based on failures
 5. Re-run with incremented iteration: `skill-eval run --iteration 2 ...`
 6. Compare benchmarks across iterations
+
+## Reading `grading.json` Evidence
+
+When an assertion fails, `grading.json` contains the details you need to debug it. Each file has this structure:
+
+```json
+{
+  "assertions": [
+    {
+      "assertion": "A new git branch was created",
+      "passed": false,
+      "method": "deterministic",
+      "evidence": "pre_state.heads = ['main']; post_state.heads = ['main'] — no new branch appeared"
+    },
+    {
+      "assertion": "The output mentions the PR URL",
+      "passed": true,
+      "method": "llm",
+      "evidence": "The output contains 'https://github.com/foo/bar/pull/42'"
+    }
+  ],
+  "summary": {
+    "passed": 2,
+    "total": 3,
+    "pass_rate": 0.667
+  }
+}
+```
+
+Key fields:
+
+- **`method`**: `"deterministic"` means the grader compared `pre_state.json` and `post_state.json` snapshots. `"llm"` means an LLM graded the assertion against the rubric.
+- **`evidence`**: For deterministic checks, this shows the exact state values that caused the pass/fail. For LLM checks, this is the model's reasoning.
+- **`assertion`**: The original assertion string from `evals.json`.
+
+To debug a failure:
+1. Open `grading.json` in the failing config directory (e.g. `eval-explicit-invoke/opencode/with_skill/grading.json`)
+2. Find assertions with `"passed": false`
+3. Check `"evidence"` — deterministic failures show the state diff; LLM failures show the model's rationale
+4. Compare `pre_state.json` and `post_state.json` to see what actually changed in the workspace
+5. Check `outputs/output.txt` for the agent's full response
 
 ## Cleanup Safety
 

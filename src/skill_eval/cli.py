@@ -13,13 +13,30 @@ from rich.table import Table
 
 load_dotenv()
 
+from skill_eval import __version__  # noqa: E402
 from skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
 from skill_eval.models import AgentType, CleanupManifest  # noqa: E402
 from skill_eval.runner import EvalRunner  # noqa: E402
 
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"skill-eval {__version__}")
+        raise typer.Exit()
+
+
 app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake")
 console = Console()
 AGENT_CHOICES = ", ".join(t.value for t in AgentType)
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    version: Optional[bool] = typer.Option(
+        None, "--version", "-v", callback=_version_callback, is_eager=True, help="Show version and exit"
+    ),
+) -> None:
+    """Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake."""
 
 
 @app.command()
