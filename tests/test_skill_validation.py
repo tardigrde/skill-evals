@@ -4,6 +4,9 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
+
+from skill_eval.models import EvalCase
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 REQUIRED_FIELDS = {"name", "description", "license", "compatibility"}
@@ -74,3 +77,38 @@ class TestSkillFrontmatter:
         parts = content.split("---", 2)
         body = parts[2].strip() if len(parts) > 2 else ""
         assert body, "SKILL.md must have content after frontmatter"
+
+
+class TestEvalCaseValidation:
+    def test_valid_eval_case(self):
+        case = EvalCase(
+            id="test-1",
+            prompt="Hello",
+            expected_output="World",
+            should_trigger=True,
+            force_skill_invocation=True,
+        )
+        assert case.should_trigger is True
+        assert case.force_skill_invocation is True
+
+    def test_negative_control_valid(self):
+        case = EvalCase(
+            id="test-2",
+            prompt="Show git log.",
+            expected_output="ok",
+            should_trigger=False,
+            force_skill_invocation=False,
+        )
+        assert case.should_trigger is False
+        assert case.force_skill_invocation is False
+
+    def test_contradictory_eval_case_raises_validation_error(self):
+        with pytest.raises(ValidationError) as exc_info:
+            EvalCase(
+                id="test-3",
+                prompt="Hello",
+                expected_output="World",
+                should_trigger=False,
+                force_skill_invocation=True,
+            )
+        assert "Contradiction" in str(exc_info.value)

@@ -4,36 +4,16 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from skill_eval.graders import DeterministicGrader
 from skill_eval.models import GitStateSnapshot
 
-
-def _init_git_workspace(path: Path) -> None:
-    subprocess.run(["git", "init", "-b", "main"], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, capture_output=True, check=True)
-    (path / "file.txt").write_text("hello")
-    subprocess.run(["git", "add", "."], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=path, capture_output=True, check=True)
+from .conftest import _init_git_workspace
 
 
 def _snapshot(ws: Path) -> GitStateSnapshot:
     from skill_eval.git_state import capture_git_state
 
     return capture_git_state(ws)
-
-
-@pytest.fixture
-def grader():
-    return DeterministicGrader()
-
-
-@pytest.fixture
-def git_workspace(tmp_path):
-    _init_git_workspace(tmp_path)
-    return tmp_path
 
 
 class TestCheckContentContains:
@@ -65,6 +45,61 @@ class TestCheckContentContains:
             "hello world",
         )
         assert result.passed
+
+
+class TestCheckCommandRan:
+    def test_passes_when_command_found_in_stdout(self, grader, tmp_path):
+        stdout_file = tmp_path / "stdout.log"
+        stdout_file.write_text("Running git commit...")
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert result.passed
+        assert "git" in result.evidence
+        assert "stdout.log" in result.evidence
+
+    def test_passes_when_command_found_in_stderr(self, grader, tmp_path):
+        stderr_file = tmp_path / "stderr.log"
+        stderr_file.write_text("Error: python script failed")
+        result = grader._check_command_ran("Verify python command ran", tmp_path)
+        assert result.passed
+        assert "python" in result.evidence
+        assert "stderr.log" in result.evidence
+
+    def test_fails_when_logs_empty_or_missing(self, grader, tmp_path):
+        result = grader._check_command_ran("Verify npm command ran", tmp_path)
+        assert not result.passed
+        assert "Command not found in logs" in result.evidence
+
+    def test_fails_when_command_not_in_logs(self, grader, tmp_path):
+        stdout_file = tmp_path / "stdout.log"
+        stdout_file.write_text("Running some other command...")
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert not result.passed
+
+    def test_passes_for_cargo(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("Compiling cargo build")
+        result = grader._check_command_ran("Verify cargo command ran", tmp_path)
+        assert result.passed
+
+    def test_passes_for_go(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("go: downloading modules")
+        result = grader._check_command_ran("Verify go command ran", tmp_path)
+        assert result.passed
+
+    def test_passes_for_yarn(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("yarn install v1.22")
+        result = grader._check_command_ran("Verify yarn command ran", tmp_path)
+        assert result.passed
+
+    def test_passes_for_pnpm(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("pnpm install complete")
+        result = grader._check_command_ran("Verify pnpm command ran", tmp_path)
+        assert result.passed
+
+    def test_fails_for_command_not_in_hardcoded_list(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("docker build complete")
+        result = grader._check_command_ran("Verify docker command ran", tmp_path)
+        assert not result.passed
+        assert "docker" not in result.evidence.lower() or "not found" in result.evidence.lower()
 
 
 class TestCheckGitBranch:

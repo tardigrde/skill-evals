@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AgentType(str, Enum):
@@ -23,6 +23,12 @@ class EvalCase(BaseModel):
     should_trigger: bool = True
     force_skill_invocation: bool = False
     stage_files: bool = False
+
+    @model_validator(mode="after")
+    def validate_contradiction(self) -> EvalCase:
+        if self.force_skill_invocation and not self.should_trigger:
+            raise ValueError("Contradiction: force_skill_invocation=True cannot be set when should_trigger=False.")
+        return self
 
 
 class EvalSuite(BaseModel):

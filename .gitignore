@@ -8,3 +8,4 @@ build/
 eval-workspace/
 .env
 uv.lock
+.coverage

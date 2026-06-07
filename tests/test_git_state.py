@@ -1,19 +1,9 @@
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
 from skill_eval.models import GitStateSnapshot
 
-
-def _init_git_workspace(path: Path) -> None:
-    subprocess.run(["git", "init", "-b", "main"], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "config", "user.name", "T"], cwd=path, capture_output=True, check=True)
-    (path / "init.txt").write_text("init")
-    subprocess.run(["git", "add", "."], cwd=path, capture_output=True, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=path, capture_output=True, check=True)
+from .conftest import _init_git_workspace
 
 
 def _make_snapshot(local_branches, remote_branches, current, head, commit_shas, remote_branch_heads=None):
@@ -116,6 +106,18 @@ class TestGitHubRepoSlug:
 
     def test_rejects_non_github_url(self):
         assert github_repo_slug("https://example.com/owner/repo.git") is None
+
+    def test_parses_https_url_no_git_suffix(self):
+        assert github_repo_slug("https://github.com/owner/repo") == "owner/repo"
+
+    def test_parses_ssh_url_no_git_suffix(self):
+        assert github_repo_slug("git@github.com:owner/repo") == "owner/repo"
+
+    def test_parses_github_com_slug_no_git_suffix(self):
+        assert github_repo_slug("github.com/owner/repo") == "owner/repo"
+
+    def test_parses_raw_slug(self):
+        assert github_repo_slug("owner/repo") == "owner/repo"
 
     def test_capture_uses_normalized_slug_for_gh(self, tmp_path, monkeypatch):
         gh_calls: list[list[str]] = []

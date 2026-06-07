@@ -642,6 +642,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
             )
             data = json.loads(response.choices[0].message.content)
             results = []
+            returned_texts = set()
             for r in data.get("results", []):
                 results.append(
                     AssertionResult(
@@ -650,6 +651,16 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
                         evidence=r["evidence"],
                     )
                 )
+                returned_texts.add(r["text"])
+            for a in assertions:
+                if a not in returned_texts:
+                    results.append(
+                        AssertionResult(
+                            text=a,
+                            passed=False,
+                            evidence="LLM grader did not return a result for this assertion",
+                        )
+                    )
             return results
         except Exception as e:
             return [AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}") for a in assertions]
