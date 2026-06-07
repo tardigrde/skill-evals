@@ -6,24 +6,57 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup
         with:
-          python-version: "3.11"
-      - run: pip install -e ".[dev]"
+          python-version: ${{ matrix.python-version }}
       - run: ruff check src/ tests/
       - run: ruff format --check src/ tests/
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup
         with:
-          python-version: "3.11"
-      - run: pip install -e ".[dev]"
-      - run: pytest -v
+          python-version: ${{ matrix.python-version }}
+      - run: pytest -v --junitxml=results.xml --cov=skill_eval --cov-report=xml:coverage.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: results.xml
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+
+  smoke:
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          python-version: "3.12"
+      - run: pytest -v tests/test_cli_smoke.py
