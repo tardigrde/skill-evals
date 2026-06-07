@@ -60,9 +60,12 @@ class OpenCodeHarness(AgentHarness):
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
-            "opencode", "run",
-            "--dir", str(self.workspace),
-            "--format", "json",
+            "opencode",
+            "run",
+            "--dir",
+            str(self.workspace),
+            "--format",
+            "json",
             "--dangerously-skip-permissions",
         ]
         if self.model:
@@ -109,7 +112,8 @@ class ClaudeCodeHarness(AgentHarness):
         cmd = [
             "claude",
             "-p",
-            "--output-format", "json",
+            "--output-format",
+            "json",
             "--dangerously-skip-permissions",
         ]
         if self.model:
@@ -147,7 +151,8 @@ class CodexHarness(AgentHarness):
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
-            "codex", "exec",
+            "codex",
+            "exec",
             "--json",
             "--full-auto",
         ]

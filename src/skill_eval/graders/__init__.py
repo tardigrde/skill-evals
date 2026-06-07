@@ -3,42 +3,175 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
+from typing import Optional
 
 from openai import OpenAI, OpenAIError
 
-from skill_eval.models import AssertionResult, GradingResult, GradingSummary
+from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
+from skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+
+
+def _is_open_pr_state(state: Optional[str]) -> bool:
+    """True if a PR state string represents an open PR.
+
+    ``gh pr list --state all`` returns PRs with state ``OPEN``, ``CLOSED``,
+    or ``MERGED``. A missing/empty state is treated as not-open so we never
+    falsely satisfy a PR-created assertion on a stale or partial snapshot.
+    """
+    if not state:
+        return False
+    return str(state).upper() == "OPEN"
+
+
+def _fetch_pr_for_branch(branch: str, source_repo: str) -> Optional[dict]:
+    """Look up a PR for ``branch`` in ``source_repo`` via ``gh pr view``.
+
+    Returns the parsed JSON dict on success, or ``None`` if ``gh`` is not
+    available, the repo is not configured, the PR is not found, or the
+    output cannot be parsed. Never raises.
+    """
+    if not source_repo or not branch:
+        return None
+    slug = github_repo_slug(source_repo)
+    if not slug:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "view",
+                branch,
+                "--repo",
+                slug,
+                "--json",
+                "number,headRefName,baseRefName,url,state",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def _load_state(path: Path) -> Optional[GitStateSnapshot]:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return GitStateSnapshot(**data)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 class DeterministicGrader:
-    def grade(self, assertions: list[str], output_dir: Path, agent_output: str, workspace: Path | None = None) -> list[AssertionResult]:
+    """Grades assertions against the *delta* caused by the agent during a run.
+
+    Prefers persisted pre/post git state snapshots (``pre_state.json``,
+    ``post_state.json``) written by the runner so that regrading works even
+    after the workspace is deleted. Falls back to capturing live state from
+    the workspace when snapshots are missing.
+    """
+
+    def __init__(
+        self,
+        pre_state: GitStateSnapshot | None = None,
+        post_state: GitStateSnapshot | None = None,
+    ):
+        self.pre_state = pre_state
+        self.post_state = post_state
+
+    def grade(
+        self,
+        assertions: list[str],
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None = None,
+        should_trigger: bool = True,
+    ) -> list[AssertionResult]:
+        pre, post = self._resolve_states(output_dir, workspace)
+        self.pre_state = pre
+        self.post_state = post
+        diff = state_diff(pre, post) if pre and post else {}
+
         results = []
         for assertion in assertions:
-            result = self._check_assertion(assertion, output_dir, agent_output, workspace)
+            result = self._check_assertion(assertion, output_dir, agent_output, workspace, should_trigger, diff)
             results.append(result)
         return results
 
-    def _check_assertion(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _resolve_states(
+        self, output_dir: Path, workspace: Path | None
+    ) -> tuple[Optional[GitStateSnapshot], Optional[GitStateSnapshot]]:
+        if self.pre_state is not None and self.post_state is not None:
+            return self.pre_state, self.post_state
+
+        pre_path = output_dir / "pre_state.json"
+        post_path = output_dir / "post_state.json"
+        pre = _load_state(pre_path)
+        post = _load_state(post_path)
+
+        if pre is not None and post is not None:
+            return pre, post
+
+        if workspace is None:
+            workspace = self._resolve_workspace(output_dir, None)
+
+        try:
+            captured = capture_git_state(workspace)
+        except Exception:
+            return pre, post
+
+        return pre or GitStateSnapshot(), captured
+
+    def _check_assertion(
+        self,
+        assertion: str,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+        should_trigger: bool,
+        diff: dict,
+    ) -> AssertionResult:
         assertion_lower = assertion.lower()
 
-        if "branch" in assertion_lower and ("created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower):
-            return self._check_git_branch(assertion, output_dir, workspace)
+        if "branch" in assertion_lower and (
+            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+        ):
+            return self._check_git_branch(assertion, diff, should_trigger)
 
-        if "commit" in assertion_lower and ("created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower):
-            return self._check_git_commit(assertion, output_dir, workspace)
+        if "commit" in assertion_lower and (
+            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+        ):
+            return self._check_git_commit(assertion, diff, should_trigger)
 
-        if "push" in assertion_lower and ("remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower):
-            return self._check_pushed(assertion, output_dir, agent_output, workspace)
+        if "push" in assertion_lower and (
+            "remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower
+        ):
+            return self._check_pushed(assertion, diff, agent_output, should_trigger)
 
         if "pr" in assertion_lower or "pull request" in assertion_lower:
-            return self._check_pr_created(assertion, output_dir, agent_output, workspace)
+            return self._check_pr_created(assertion, diff, agent_output, should_trigger, output_dir)
 
-        if "file exists" in assertion_lower or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])):
+        if "file exists" in assertion_lower or (
+            "created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])
+        ):
             return self._check_file_exists(assertion, output_dir, workspace)
 
-        if "ran" in assertion_lower and ("command" in assertion_lower or any(
-            cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"]
-        )):
+        if "ran" in assertion_lower and (
+            "command" in assertion_lower
+            or any(cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"])
+        ):
             return self._check_command_ran(assertion, output_dir)
 
         if "contains" in assertion_lower or "includes" in assertion_lower:
@@ -56,12 +189,37 @@ class DeterministicGrader:
     def _resolve_workspace(self, output_dir: Path, workspace: Path | None) -> Path:
         if workspace:
             return workspace
-        return output_dir.parent.parent if "with_skill" in str(output_dir) or "without_skill" in str(output_dir) else output_dir.parent
+        if "with_skill" in str(output_dir) or "without_skill" in str(output_dir):
+            return output_dir.parent.parent
+        return output_dir.parent
+
+    def _invert(self, should_trigger: bool) -> bool:
+        """For negative controls, branch/commit/push/pr assertions are inverted."""
+        return not should_trigger
+
+    def _source_repo_from_meta(self, output_dir: Path | None) -> Optional[str]:
+        """Read ``source_repo`` from ``run_meta.json`` adjacent to ``outputs/``.
+
+        Returns ``None`` when no metadata is available or the field is unset.
+        The grader uses this to optionally corroborate PR checks via
+        ``gh pr view <branch>`` for a real-time validation pass.
+        """
+        if output_dir is None:
+            return None
+        meta_path = output_dir.parent / "run_meta.json"
+        if not meta_path.exists():
+            return None
+        try:
+            data = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None
+        repo = data.get("source_repo")
+        return str(repo) if repo else None
 
     def _check_file_exists(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         ws = self._resolve_workspace(output_dir, workspace)
 
-        patterns = re.findall(r'`([^`]+)`', assertion)
+        patterns = re.findall(r"`([^`]+)`", assertion)
         if not patterns:
             patterns = re.findall(r'"([^"]+)"', assertion)
         if not patterns:
@@ -69,6 +227,13 @@ class DeterministicGrader:
             for w in words:
                 if "." in w and "/" not in w:
                     patterns.append(w)
+
+        if not ws.exists():
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=f"Workspace not available. Searched for: {patterns}",
+            )
 
         for pattern in patterns:
             candidates = list(ws.rglob(pattern))
@@ -109,13 +274,13 @@ class DeterministicGrader:
         return AssertionResult(
             text=assertion,
             passed=False,
-            evidence=f"Command not found in logs",
+            evidence="Command not found in logs",
         )
 
     def _check_content_contains(self, assertion: str, agent_output: str) -> AssertionResult:
         patterns = re.findall(r'"([^"]+)"', assertion)
         if not patterns:
-            patterns = re.findall(r'`([^`]+)`', assertion)
+            patterns = re.findall(r"`([^`]+)`", assertion)
 
         output_lower = agent_output.lower()
         for pattern in patterns:
@@ -132,7 +297,9 @@ class DeterministicGrader:
             evidence=f"Pattern not found in output. Searched for: {patterns}",
         )
 
-    def _check_valid_json(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
+    def _check_valid_json(
+        self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None
+    ) -> AssertionResult:
         try:
             json.loads(agent_output)
             return AssertionResult(text=assertion, passed=True, evidence="Output is valid JSON")
@@ -140,6 +307,9 @@ class DeterministicGrader:
             pass
 
         ws = self._resolve_workspace(output_dir, workspace)
+        if not ws.exists():
+            return AssertionResult(text=assertion, passed=False, evidence="Workspace not available for JSON check")
+
         for json_file in ws.rglob("*.json"):
             try:
                 json.loads(json_file.read_text())
@@ -153,143 +323,259 @@ class DeterministicGrader:
 
         return AssertionResult(text=assertion, passed=False, evidence="No valid JSON found")
 
-    def _check_git_branch(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
-        ws = self._resolve_workspace(output_dir, workspace)
+    def _check_git_branch(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_branches = diff.get("new_branches", []) or []
+        eval_branch = diff.get("eval_branch")
+        current_branch = diff.get("current_branch", "")
+        branch_changed = diff.get("current_branch_changed", False)
 
-        try:
-            result = subprocess.run(
-                ["git", "branch", "-a"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if inverted:
+            if new_branches:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(f"Skill should not have triggered, but new branches appeared: {new_branches}"),
+                )
+            if branch_changed and eval_branch:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but current branch changed to "
+                        f"new eval branch {current_branch!r}"
+                    ),
+                )
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new branch was created (skill did not trigger)",
             )
-            branches = result.stdout.strip().split("\n")
-            branches = [b.strip().lstrip("* ") for b in branches if b.strip()]
-            
-            non_main_branches = [b for b in branches if "main" not in b and "HEAD" not in b]
-            
-            if non_main_branches:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Branches found: {', '.join(non_main_branches[:3])}",
-                )
-        except Exception as e:
-            return AssertionResult(text=assertion, passed=False, evidence=f"Git error: {e}")
 
-        return AssertionResult(text=assertion, passed=False, evidence="No new branch found")
-
-    def _check_git_commit(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["git", "log", "--oneline", "-5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if not new_branches:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"No new branch appeared in this run. current_branch={current_branch!r}; no eval-created branch."
+                ),
             )
-            commits = result.stdout.strip().split("\n")
-            if len(commits) > 1:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Commits found: {len(commits)}",
-                )
-        except Exception as e:
-            return AssertionResult(text=assertion, passed=False, evidence=f"Git error: {e}")
-
-        return AssertionResult(text=assertion, passed=False, evidence="No new commits found")
-
-    def _check_pushed(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["git", "log", "--remotes", "--oneline", "-5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+        if eval_branch is None:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New branches {new_branches} appeared, but none is the current/eval branch. "
+                    f"current_branch={current_branch!r}"
+                ),
             )
-            if result.stdout.strip():
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=f"New eval branch created and checked out: {eval_branch}",
+        )
+
+    def _check_git_commit(self, assertion: str, diff: dict, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        advanced = diff.get("head_advanced", False)
+        new_commits = diff.get("new_commits", []) or []
+        new_commit_shas = diff.get("new_commit_shas", []) or []
+        post_head = self.post_state.head_sha if self.post_state else ""
+
+        if inverted:
+            if new_commit_shas or new_commits:
                 return AssertionResult(
                     text=assertion,
-                    passed=True,
-                    evidence=f"Remote branches have commits: {result.stdout.strip()[:100]}",
+                    passed=False,
+                    evidence="Skill should not have triggered, but new commit(s) were created",
                 )
-        except Exception:
-            pass
-
-        push_indicators = ["push", "pushed", "git push", "origin"]
-        output_lower = agent_output.lower()
-
-        for indicator in push_indicators:
-            if indicator in output_lower:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Found push indicator '{indicator}' in output",
-                )
-
-        stderr_log = output_dir / "stderr.log"
-        if stderr_log.exists():
-            stderr_content = stderr_log.read_text().lower()
-            for indicator in push_indicators:
-                if indicator in stderr_content:
-                    return AssertionResult(
-                        text=assertion,
-                        passed=True,
-                        evidence=f"Found push indicator '{indicator}' in stderr",
-                    )
-
-        return AssertionResult(text=assertion, passed=False, evidence="No push evidence found")
-
-    def _check_pr_created(self, assertion: str, output_dir: Path, agent_output: str, workspace: Path | None = None) -> AssertionResult:
-        import subprocess
-        ws = self._resolve_workspace(output_dir, workspace)
-
-        try:
-            result = subprocess.run(
-                ["gh", "pr", "list", "--state", "open", "--limit", "5"],
-                cwd=ws,
-                capture_output=True,
-                text=True,
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new commit was created (skill did not trigger)",
             )
-            if result.returncode == 0 and result.stdout.strip():
+
+        if not new_commit_shas and not new_commits:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    "HEAD may have moved, but no new commit was created in this run. "
+                    f"head_advanced={advanced}, new_commits={new_commits}"
+                ),
+            )
+        if new_commit_shas and post_head and post_head not in new_commit_shas:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New commit(s) appeared ({len(new_commit_shas)}), but current HEAD "
+                    f"({post_head[:12]}) is not one of them. The new commit is not on the "
+                    f"current branch."
+                ),
+            )
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=f"New commit on current branch (HEAD {post_head[:12] if post_head else '?'})",
+        )
+
+    def _check_pushed(self, assertion: str, diff: dict, agent_output: str, should_trigger: bool) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_remote_branches = diff.get("new_remote_branches", []) or []
+        eval_branch = diff.get("eval_branch")
+        eval_branch_pushed = diff.get("eval_branch_pushed", False)
+        eval_branch_pushed_matches_head = diff.get("eval_branch_pushed_matches_head", False)
+        post_head = self.post_state.head_sha if self.post_state else ""
+
+        if inverted:
+            if new_remote_branches:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but new remote branches appeared: {new_remote_branches}"
+                    ),
+                )
+            if eval_branch_pushed:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence="Skill should not have triggered, but eval branch was pushed",
+                )
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new remote branches (skill did not trigger)",
+            )
+
+        if not eval_branch:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=("No eval-created branch in this run; cannot verify that the right branch was pushed."),
+            )
+        if not eval_branch_pushed:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(f"Eval branch {eval_branch!r} was not pushed. new_remote_branches={new_remote_branches}"),
+            )
+        if not eval_branch_pushed_matches_head:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"Eval branch {eval_branch!r} was pushed, but its remote HEAD does not "
+                    f"match the local HEAD ({post_head[:12] if post_head else '?'})."
+                ),
+            )
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=(f"Eval branch {eval_branch!r} pushed with HEAD {post_head[:12] if post_head else '?'}"),
+        )
+
+    def _check_pr_created(
+        self,
+        assertion: str,
+        diff: dict,
+        agent_output: str,
+        should_trigger: bool,
+        output_dir: Path | None = None,
+    ) -> AssertionResult:
+        inverted = self._invert(should_trigger)
+        new_prs = diff.get("new_open_prs", []) or []
+        eval_branch = diff.get("eval_branch")
+
+        source_repo = self._source_repo_from_meta(output_dir)
+        live_pr: Optional[dict] = None
+        if source_repo and eval_branch:
+            live_pr = _fetch_pr_for_branch(eval_branch, source_repo)
+
+        if inverted:
+            if new_prs:
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but new PR(s) appeared: {[p.get('number') for p in new_prs]}"
+                    ),
+                )
+            if live_pr and _is_open_pr_state(live_pr.get("state")):
+                return AssertionResult(
+                    text=assertion,
+                    passed=False,
+                    evidence=(
+                        f"Skill should not have triggered, but gh pr view reports an "
+                        f"open PR for {eval_branch!r} (#{live_pr.get('number')})"
+                    ),
+                )
+            return AssertionResult(
+                text=assertion,
+                passed=True,
+                evidence="No new PRs were opened (skill did not trigger)",
+            )
+
+        if not new_prs:
+            if live_pr and _is_open_pr_state(live_pr.get("state")):
                 return AssertionResult(
                     text=assertion,
                     passed=True,
-                    evidence=f"Open PRs found: {result.stdout.strip()[:100]}",
+                    evidence=(
+                        f"State snapshot shows no new PRs, but gh pr view confirms an "
+                        f"open PR #{live_pr.get('number')} for eval branch {eval_branch!r}"
+                    ),
                 )
-        except Exception:
-            pass
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence="No new PRs appeared in this run (state diff shows no new PRs)",
+            )
+        if not eval_branch:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New PR(s) {[p.get('number') for p in new_prs]} appeared, but no "
+                    f"eval-created branch was identified in this run; cannot verify the "
+                    f"PR is for the eval branch."
+                ),
+            )
+        matching = [p for p in new_prs if p.get("headRefName") == eval_branch and _is_open_pr_state(p.get("state"))]
+        if not matching:
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"New PR(s) {[p.get('number') for p in new_prs]} appeared, but none "
+                    f"have headRefName matching eval branch {eval_branch!r} with state OPEN. "
+                    f"head refs: {[p.get('headRefName') for p in new_prs]}, "
+                    f"states: {[p.get('state') for p in new_prs]}"
+                ),
+            )
 
-        pr_indicators = ["pull request", "github.com/pull", "merge request"]
-        output_lower = agent_output.lower()
+        if live_pr is not None and not _is_open_pr_state(live_pr.get("state")):
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=(
+                    f"State snapshot shows open PR(s) {[p.get('number') for p in matching]} "
+                    f"for eval branch {eval_branch!r}, but gh pr view reports the PR is "
+                    f"{live_pr.get('state')!r}; the PR was likely closed/merged between "
+                    f"snapshot and grading."
+                ),
+            )
 
-        for indicator in pr_indicators:
-            if indicator in output_lower:
-                return AssertionResult(
-                    text=assertion,
-                    passed=True,
-                    evidence=f"Found PR indicator '{indicator}' in output",
-                )
-
-        stderr_log = output_dir / "stderr.log"
-        if stderr_log.exists():
-            stderr_content = stderr_log.read_text().lower()
-            for indicator in pr_indicators:
-                if indicator in stderr_content:
-                    return AssertionResult(
-                        text=assertion,
-                        passed=True,
-                        evidence=f"Found PR indicator '{indicator}' in stderr",
-                    )
-
-        return AssertionResult(text=assertion, passed=False, evidence="No PR creation evidence found")
+        numbers = [p.get("number") for p in matching]
+        evidence = f"PR(s) for eval branch {eval_branch!r}: {numbers}"
+        if live_pr is not None:
+            evidence += f" (corroborated by gh pr view: state={live_pr.get('state')!r})"
+        return AssertionResult(
+            text=assertion,
+            passed=True,
+            evidence=evidence,
+        )
 
 
 class LLMGrader:
@@ -303,9 +589,7 @@ class LLMGrader:
         if self._client is None:
             api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
-                raise OpenAIError(
-                    "OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable."
-                )
+                raise OpenAIError("OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable.")
             base_url = self.base_url or os.environ.get("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
             self._client = OpenAI(
                 api_key=api_key,
@@ -338,7 +622,7 @@ class LLMGrader:
 {file_listing}
 
 ## Assertions to Grade
-{chr(10).join(f'{i+1}. {a}' for i, a in enumerate(assertions))}
+{chr(10).join(f"{i + 1}. {a}" for i, a in enumerate(assertions))}
 
 For each assertion, respond with JSON:
 {{
@@ -359,17 +643,16 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
             data = json.loads(response.choices[0].message.content)
             results = []
             for r in data.get("results", []):
-                results.append(AssertionResult(
-                    text=r["text"],
-                    passed=r["passed"],
-                    evidence=r["evidence"],
-                ))
+                results.append(
+                    AssertionResult(
+                        text=r["text"],
+                        passed=r["passed"],
+                        evidence=r["evidence"],
+                    )
+                )
             return results
         except Exception as e:
-            return [
-                AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}")
-                for a in assertions
-            ]
+            return [AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}") for a in assertions]
 
     def _list_workspace_files(self, workspace: Path) -> str:
         files = []
@@ -391,9 +674,14 @@ def grade_assertions(
     expected_output: str,
     llm_grader: LLMGrader | None = None,
     workspace: Path | None = None,
+    pre_state: GitStateSnapshot | None = None,
+    post_state: GitStateSnapshot | None = None,
+    should_trigger: bool = True,
 ) -> GradingResult:
-    det_grader = DeterministicGrader()
-    det_results = det_grader.grade(assertions, output_dir, agent_output, workspace=workspace)
+    det_grader = DeterministicGrader(pre_state=pre_state, post_state=post_state)
+    det_results = det_grader.grade(
+        assertions, output_dir, agent_output, workspace=workspace, should_trigger=should_trigger
+    )
 
     undetermined = [r for r in det_results if "Could not deterministically check" in r.evidence]
     determined = [r for r in det_results if "Could not deterministically check" not in r.evidence]

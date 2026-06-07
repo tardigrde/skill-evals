@@ -5,7 +5,6 @@ from pathlib import Path
 
 from skill_eval.models import AgentType
 
-
 SKILL_PATHS = {
     AgentType.OPENCODE: [".opencode/skills"],
     AgentType.CLAUDE_CODE: [".claude/skills"],
