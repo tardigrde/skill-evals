@@ -45,6 +45,10 @@ class EvalRunner:
         grader_base_url: Optional[str] = None,
         agent_models: Optional[dict[AgentType, str]] = None,
         source_repo: Optional[str] = None,
+        harness_base_url: Optional[str] = None,
+        agent_timeout: Optional[int] = None,
+        agent_max_retries: Optional[int] = None,
+        runs: int = 1,
     ):
         self.skill_path = skill_path
         self.evals_path = evals_path
@@ -56,6 +60,10 @@ class EvalRunner:
         self.grader_base_url = grader_base_url
         self.agent_models = agent_models or {}
         self.source_repo = source_repo
+        self.harness_base_url = harness_base_url
+        self.agent_timeout = agent_timeout
+        self.agent_max_retries = agent_max_retries
+        self.runs = max(1, runs)
 
         self.run_id = uuid.uuid4().hex[:8]
         self.suite = self._load_suite()
@@ -64,7 +72,7 @@ class EvalRunner:
         self.llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url) if grader_model else None
 
     def _load_suite(self) -> EvalSuite:
-        with open(self.evals_path) as f:
+        with open(self.evals_path, encoding="utf-8") as f:
             data = json.load(f)
         return EvalSuite(**data)
 
@@ -77,9 +85,10 @@ class EvalRunner:
         tasks = []
         for eval_case in self.suite.evals:
             for agent_type in self.agents:
-                tasks.append((eval_case, agent_type, True))
-                if self.with_baseline:
-                    tasks.append((eval_case, agent_type, False))
+                for run_index in range(1, self.runs + 1):
+                    tasks.append((eval_case, agent_type, True, run_index))
+                    if self.with_baseline:
+                        tasks.append((eval_case, agent_type, False, run_index))
 
         results: dict[str, dict] = {}
         cleanup_entries: list[CleanupManifest] = []
@@ -95,7 +104,7 @@ class EvalRunner:
 
             with ThreadPoolExecutor(max_workers=self.concurrency) as executor:
                 futures = {}
-                for eval_case, agent_type, with_skill in tasks:
+                for eval_case, agent_type, with_skill, run_index in tasks:
                     future = executor.submit(
                         self._run_single,
                         eval_case,
@@ -103,12 +112,13 @@ class EvalRunner:
                         with_skill,
                         iteration_dir,
                         iteration,
+                        run_index,
                     )
-                    futures[future] = (eval_case, agent_type, with_skill)
+                    futures[future] = (eval_case, agent_type, with_skill, run_index)
 
             for future in as_completed(futures):
-                eval_case, agent_type, with_skill = futures[future]
-                key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}"
+                eval_case, agent_type, with_skill, run_index = futures[future]
+                key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}-r{run_index}"
                 try:
                     result = future.result()
                     results[key] = result["summary"]
@@ -121,11 +131,19 @@ class EvalRunner:
 
         benchmark = self._compute_benchmark(results, iteration_dir)
 
-        with open(iteration_dir / "benchmark.json", "w") as f:
+        if self.with_baseline:
+            for agent_type in self.agents:
+                if agent_type.value not in benchmark.deltas:
+                    console.print(
+                        f"[yellow]Warning: no with/without-skill delta for {agent_type.value} — "
+                        f"all of its runs in one config errored[/yellow]"
+                    )
+
+        with open(iteration_dir / "benchmark.json", "w", encoding="utf-8") as f:
             json.dump(benchmark.model_dump(), f, indent=2)
 
         manifest = self._build_cleanup_manifest(cleanup_entries, iteration_dir)
-        with open(iteration_dir / "cleanup.json", "w") as f:
+        with open(iteration_dir / "cleanup.json", "w", encoding="utf-8") as f:
             json.dump(manifest.model_dump(exclude_none=True), f, indent=2)
 
         console.print(f"\n[green]Results saved to {iteration_dir}[/green]")
@@ -137,7 +155,7 @@ class EvalRunner:
             "evals": [eval_case.model_dump() for eval_case in self.suite.evals],
             "source_repo": self.source_repo,
         }
-        with open(iteration_dir / "evals_meta.json", "w") as f:
+        with open(iteration_dir / "evals_meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
     def _build_cleanup_manifest(self, entries: list[CleanupManifest], iteration_dir: Path) -> CleanupManifest:
@@ -166,11 +184,15 @@ class EvalRunner:
         with_skill: bool,
         iteration_dir: Path,
         iteration: int = 1,
+        run_index: int = 1,
     ) -> dict:
         eval_slug = f"eval-{eval_case.id}"
         config_slug = "with_skill" if with_skill else "without_skill"
         agent_slug = agent_type.value
-        output_dir = iteration_dir / eval_slug / agent_slug / config_slug / "outputs"
+        config_dir = iteration_dir / eval_slug / agent_slug / config_slug
+        if self.runs > 1:
+            config_dir = config_dir / f"run-{run_index}"
+        output_dir = config_dir / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         fixture_files = {}
@@ -179,10 +201,10 @@ class EvalRunner:
             if src.exists():
                 fixture_files[Path(file_path).name] = src
 
-        workspace = self.workspace_mgr.create_workspace(
-            f"{eval_case.id}-{agent_type.value}-{'ws' if with_skill else 'bs'}",
-            fixture_files,
-        )
+        workspace_name = f"{eval_case.id}-{agent_type.value}-{'ws' if with_skill else 'bs'}"
+        if self.runs > 1:
+            workspace_name += f"-r{run_index}"
+        workspace = self.workspace_mgr.create_workspace(workspace_name, fixture_files)
 
         if with_skill:
             self.skill_installer.install(workspace, agent_type)
@@ -197,25 +219,32 @@ class EvalRunner:
                 )
 
         model = self.agent_models.get(agent_type)
-        harness = get_harness(agent_type, workspace, model)
+        harness = get_harness(
+            agent_type,
+            workspace,
+            model,
+            base_url=self.harness_base_url,
+            timeout=self.agent_timeout,
+            max_retries=self.agent_max_retries,
+        )
 
         prompt = self._build_prompt(eval_case, with_skill)
 
         pre_state = capture_git_state(workspace, source_repo=self.source_repo)
-        with open(output_dir / "pre_state.json", "w") as f:
+        with open(output_dir / "pre_state.json", "w", encoding="utf-8") as f:
             json.dump(pre_state.model_dump(), f, indent=2)
 
         agent_output, timing, stdout, stderr = harness.run(prompt, output_dir)
 
         post_state = capture_git_state(workspace, source_repo=self.source_repo)
-        with open(output_dir / "post_state.json", "w") as f:
+        with open(output_dir / "post_state.json", "w", encoding="utf-8") as f:
             json.dump(post_state.model_dump(), f, indent=2)
 
-        with open(output_dir / "output.txt", "w") as f:
+        with open(output_dir / "output.txt", "w", encoding="utf-8") as f:
             f.write(agent_output)
 
         timing_path = output_dir.parent / "timing.json"
-        with open(timing_path, "w") as f:
+        with open(timing_path, "w", encoding="utf-8") as f:
             json.dump(timing.model_dump(), f, indent=2)
 
         run_meta = RunMeta(
@@ -226,9 +255,10 @@ class EvalRunner:
             skill_name=self.suite.skill_name,
             source_repo=self.source_repo,
             run_id=self.run_id,
+            run_index=run_index,
         )
         meta_path = output_dir.parent / "run_meta.json"
-        with open(meta_path, "w") as f:
+        with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(run_meta.model_dump(), f, indent=2)
 
         grading = grade_assertions(
@@ -244,7 +274,7 @@ class EvalRunner:
         )
 
         grading_path = output_dir.parent / "grading.json"
-        with open(grading_path, "w") as f:
+        with open(grading_path, "w", encoding="utf-8") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
         cleanup_entry = self._build_cleanup_entry(pre_state, post_state)
@@ -259,6 +289,7 @@ class EvalRunner:
                 "eval_id": eval_case.id,
                 "agent": agent_type.value,
                 "with_skill": with_skill,
+                "run_index": run_index,
                 "timing": timing.model_dump(),
                 "grading": grading.model_dump(),
                 "agent_output": agent_output[:2000],
@@ -304,6 +335,11 @@ class EvalRunner:
         return compute_stats(results)
 
 
+def _is_full_pass(result: dict) -> bool:
+    summary = result["grading"]["summary"]
+    return summary.get("total", 1) > 0 and summary.get("pass_rate", 0.0) >= 1.0
+
+
 def compute_stats(results: list[dict]) -> BenchmarkStats:
     if not results:
         return BenchmarkStats(
@@ -315,6 +351,16 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
     pass_rates = [r["grading"]["summary"]["pass_rate"] for r in results]
     times = [r["timing"]["duration_ms"] / 1000.0 for r in results]
     tokens = [r["timing"]["total_tokens"] for r in results]
+
+    full_passes = [_is_full_pass(r) for r in results]
+
+    # pass@k: group runs by eval id; an eval counts as passed if ANY of its
+    # runs fully passed. With one run per eval this equals full_pass_rate.
+    by_eval: dict[str, list[bool]] = {}
+    for r, fp in zip(results, full_passes):
+        by_eval.setdefault(str(r.get("eval_id", "?")), []).append(fp)
+    k = max(len(v) for v in by_eval.values())
+    pass_at_k = sum(1 for v in by_eval.values() if any(v)) / len(by_eval)
 
     return BenchmarkStats(
         pass_rate=StatsPair(
@@ -329,6 +375,9 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
             mean=statistics.mean(tokens) if tokens else 0.0,
             stddev=statistics.stdev(tokens) if len(tokens) > 1 else 0.0,
         ),
+        full_pass_rate=sum(full_passes) / len(full_passes),
+        pass_at_k=pass_at_k,
+        k=k,
     )
 
 
@@ -336,9 +385,12 @@ def compute_benchmark(results: dict[str, dict], agents: list[AgentType], with_ba
     """Compute the benchmark summary from a results dict.
 
     Module-level so it can be called from the ``grade`` command without a
-    full ``EvalRunner`` instance.
+    full ``EvalRunner`` instance. Computes a with/without-skill delta for
+    EVERY agent (``deltas``); ``delta`` is kept for backward compatibility
+    and is only set when exactly one agent was run.
     """
     run_summary = {}
+    deltas: dict[str, DeltaStats] = {}
 
     for agent_type in agents:
         with_results = [
@@ -358,18 +410,15 @@ def compute_benchmark(results: dict[str, dict], agents: list[AgentType], with_ba
         run_summary[f"{agent_type.value}_with_skill"] = with_stats
         if with_baseline:
             run_summary[f"{agent_type.value}_without_skill"] = without_stats
+            if with_results and without_results:
+                deltas[agent_type.value] = DeltaStats(
+                    pass_rate=with_stats.pass_rate.mean - without_stats.pass_rate.mean,
+                    time_seconds=with_stats.time_seconds.mean - without_stats.time_seconds.mean,
+                    tokens=with_stats.tokens.mean - without_stats.tokens.mean,
+                )
 
-    delta = DeltaStats(pass_rate=0.0, time_seconds=0.0, tokens=0.0)
+    delta = None
+    if len(agents) == 1 and agents[0].value in deltas:
+        delta = deltas[agents[0].value]
 
-    if with_baseline and len(agents) == 1:
-        agent = agents[0]
-        with_key = f"{agent.value}_with_skill"
-        without_key = f"{agent.value}_without_skill"
-        if with_key in run_summary and without_key in run_summary:
-            delta = DeltaStats(
-                pass_rate=run_summary[with_key].pass_rate.mean - run_summary[without_key].pass_rate.mean,
-                time_seconds=run_summary[with_key].time_seconds.mean - run_summary[without_key].time_seconds.mean,
-                tokens=run_summary[with_key].tokens.mean - run_summary[without_key].tokens.mean,
-            )
-
-    return BenchmarkResult(run_summary=run_summary, delta=delta)
+    return BenchmarkResult(run_summary=run_summary, deltas=deltas, delta=delta)
