@@ -219,13 +219,15 @@ skill-eval init my-skill [--output ./examples]
 
 ## Example skills
 
-Three example skills ship with the repo, chosen to exercise different grading surfaces:
+Five example skills ship with the repo, chosen to exercise different grading surfaces:
 
 | Skill | Tests | Grading surface |
 | --- | --- | --- |
 | [`commit-push-pr`](skills/commit-push-pr/SKILL.md) | git workflow automation | deterministic state-diff checks (branch/commit/push/PR); needs a `--source-repo` |
 | [`fix-failing-tests`](skills/fix-failing-tests/SKILL.md) | error recovery / iterative refinement | deterministic + file checks; fully offline |
 | [`write-release-notes`](skills/write-release-notes/SKILL.md) | subjective writing quality, anti-fabrication | LLM rubric grading; fully offline |
+| [`validate-config`](skills/validate-config/SKILL.md) | bundled resources: does the agent run the skill's `scripts/` and read its `references/`? | command-ran + file + content checks; fully offline |
+| [`review-diff`](skills/review-diff/SKILL.md) | read-only analysis: planted bugs found, documented decoy not flagged, nothing modified | chat-output-only grading (content + LLM rubric); fully offline |
 
 Each has a matching eval suite under [`examples/`](examples/). `skills/` holds the artifacts being evaluated; `examples/` holds the test cases — so you can test one skill against many suites or one suite against many skill versions.
 

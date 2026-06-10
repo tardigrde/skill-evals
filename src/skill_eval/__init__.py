@@ -3,6 +3,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("skill-eval")
+    __version__ = version("agent-skill-eval")
 except PackageNotFoundError:
-    __version__ = "0.1.0"
+    __version__ = "0.3.0"

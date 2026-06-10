@@ -1,0 +1,45 @@
+{
+  "skill_name": "review-diff",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Use the $review-diff skill to review changes.diff against the current code.",
+      "expected_output": "The agent reads changes.diff and orders.py, identifies the two real bugs (the loop skips the last item due to range(len(prices) - 1), and the comparison uses > instead of >= so exactly `threshold` items get no discount despite the docstring saying 'threshold or more'), does not flag the documented cents-based summation, modifies nothing, and ends with VERDICT: REQUEST_CHANGES.",
+      "files": ["files/orders.py", "files/changes.diff"],
+      "force_skill_invocation": true,
+      "assertions": [
+        "The output contains \"VERDICT\"",
+        "The output contains \"REQUEST_CHANGES\"",
+        "The review identifies that the loop skips the last item (off-by-one in the range bound)",
+        "The review identifies that the threshold comparison uses > instead of >=, contradicting the docstring's 'threshold or more'",
+        "The review does not flag the cents-based summation, which is correct and documented as intentional",
+        "The agent did not modify orders.py and did not write any new files"
+      ]
+    },
+    {
+      "id": "implicit-invoke",
+      "prompt": "A teammate sent me changes.diff with a proposed addition to orders.py. Can you review it before I merge?",
+      "expected_output": "The agent automatically triggers the skill, reads both files, reports the two planted bugs with severities, leaves the workspace untouched, and ends with VERDICT: REQUEST_CHANGES.",
+      "files": ["files/orders.py", "files/changes.diff"],
+      "assertions": [
+        "The output contains \"VERDICT\"",
+        "The output contains \"REQUEST_CHANGES\"",
+        "The review identifies that the loop skips the last item (off-by-one in the range bound)",
+        "The review identifies that the threshold comparison uses > instead of >=, contradicting the docstring's 'threshold or more'",
+        "The agent did not modify orders.py and did not write any new files"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "How many functions does changes.diff add to orders.py?",
+      "expected_output": "The skill should NOT trigger. The agent should answer that the diff adds one function (bulk_discount_total) without producing a full code review or verdict.",
+      "files": ["files/orders.py", "files/changes.diff"],
+      "should_trigger": false,
+      "assertions": [
+        "The output contains \"bulk_discount_total\"",
+        "The agent states that exactly one function is added",
+        "The agent only answered the question without delivering a severity-tagged review or verdict"
+      ]
+    }
+  ]
+}

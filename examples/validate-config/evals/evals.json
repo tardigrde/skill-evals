@@ -1,0 +1,57 @@
+{
+  "skill_name": "validate-config",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Use the $validate-config skill to validate app_config.json.",
+      "expected_output": "The agent runs the bundled structural validator script, reads the convention rules from the skill's references, writes CONFIG_REPORT.md flagging 5 violations (missing 'environment' key, service_name not svc- kebab-case, port 8080 outside 9000-9999, log_level 'verbose' not allowed, max_retries 10 above 5), and reports TOTAL VIOLATIONS: 5.",
+      "files": ["files/app_config.json"],
+      "force_skill_invocation": true,
+      "assertions": [
+        "The agent ran the bundled python validation script",
+        "The file `CONFIG_REPORT.md` exists",
+        "The output contains \"TOTAL VIOLATIONS\"",
+        "The report flags the port as outside the allowed 9000-9999 range",
+        "The report flags service_name for not being kebab-case with the svc- prefix",
+        "The report flags the missing 'environment' key as a structural issue",
+        "The report does not flag cache_ttl_seconds, which complies with the rules"
+      ]
+    },
+    {
+      "id": "implicit-invoke",
+      "prompt": "Can you check whether app_config.json follows our team's configuration conventions?",
+      "expected_output": "The agent automatically triggers the skill, runs the bundled validator, checks the reference rules, and writes CONFIG_REPORT.md listing all 5 violations.",
+      "files": ["files/app_config.json"],
+      "assertions": [
+        "The agent ran the bundled python validation script",
+        "The file `CONFIG_REPORT.md` exists",
+        "The output contains \"TOTAL VIOLATIONS\"",
+        "The report flags the port as outside the allowed 9000-9999 range",
+        "The report flags max_retries as exceeding the maximum of 5"
+      ]
+    },
+    {
+      "id": "reference-knowledge",
+      "prompt": "Is the port configured in app_config.json allowed by our team's port allocation policy?",
+      "expected_output": "The agent consults the skill's references/config-rules.md, finds the allocated range 9000-9999, and answers that port 8080 is NOT allowed. Without the skill the agent cannot know the policy and should say so or guess.",
+      "files": ["files/app_config.json"],
+      "assertions": [
+        "The output contains \"9000\"",
+        "The agent states that port 8080 is not allowed by the policy",
+        "The agent cites the team's allocated port range rather than guessing a generic answer"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "What is the value of max_retries in app_config.json?",
+      "expected_output": "The skill should NOT trigger. The agent should simply read the file and answer '10' without running the validator or writing a report.",
+      "files": ["files/app_config.json"],
+      "should_trigger": false,
+      "assertions": [
+        "The output contains \"10\"",
+        "The agent only answered the question without writing a report file",
+        "The validation script was not executed"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "service_name": "DataPipeline",
+  "port": 8080,
+  "log_level": "verbose",
+  "max_retries": 10,
+  "features": {
+    "cache_enabled": true,
+    "cache_ttl_seconds": 600
+  }
+}

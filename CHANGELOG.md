@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-06-11
+
+### Added
+- `validate-config` example skill + eval suite: exercises bundled resources (agent runs skill's `scripts/` and reads its `references/`); graded via command-ran + file + content checks; fully offline
+- `review-diff` example skill + eval suite: read-only analysis (planted bugs found, documented decoy not flagged, nothing modified); graded via chat-output-only content + LLM rubric; fully offline
+
+## [0.2.1] - 2026-06-11
+
+### Changed
+- Renamed package from `skill-eval` to `agent-skill-eval` (PyPI name collision)
+
 ## [0.2.0] - 2026-06-10
 
 ### Added
