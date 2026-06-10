@@ -32,11 +32,15 @@ AGENT_CHOICES = ", ".join(t.value for t in AgentType)
 
 @app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: Optional[bool] = typer.Option(
         None, "--version", "-v", callback=_version_callback, is_eager=True, help="Show version and exit"
     ),
 ) -> None:
     """Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
 
 
 @app.command()

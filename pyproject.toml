@@ -12,8 +12,6 @@ readme = "README.md"
 authors = [
     { name = "skill-eval contributors" },
 ]
-homepage = "https://github.com/anthropics/skill-eval"
-repository = "https://github.com/anthropics/skill-eval"
 keywords = ["agent", "evaluation", "skills", "benchmark", "llm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -33,6 +31,10 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tardigrde/skill-evals"
+Repository = "https://github.com/tardigrde/skill-evals"
 
 [project.optional-dependencies]
 dev = [
