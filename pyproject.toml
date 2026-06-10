@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "skill-eval"
-version = "0.2.0"
+name = "agent-skill-eval"
+version = "0.2.1"
 description = "Framework for evaluating agent skills across OpenCode, Claude Code, and Codex"
 requires-python = ">=3.11"
 license = "MIT"
