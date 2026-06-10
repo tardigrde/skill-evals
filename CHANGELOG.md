@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-06-10
+
+### Added
+- `write-release-notes` example skill + eval suite: exercises LLM rubric grading (grouping, breaking-change prominence, anti-fabrication) instead of git-state checks
+- `--runs N` repeats every (eval, agent, config); `benchmark.json` now reports `full_pass_rate`, `pass_at_k`, and `k`
+- `--agent-model agent=model` (repeatable) and `--harness-base-url` to pin models and endpoints per agent CLI
+- `--timeout` / `--retries` flags; harnesses retry on timeout or non-zero exit with backoff and record `exit_code`, `timed_out`, `retries` in `timing.json`
+- `skill-eval validate`: schema + fixture-existence + duplicate-id checks for evals.json
+- `skill-eval list`: discover eval suites and skills under a directory
+- `skill-eval compare`: side-by-side pass rates of two iterations
+- `report --format markdown` and `report --show-evidence` (failed/skipped assertion evidence)
+- JSON Schema for the eval suite format at `schemas/evals.schema.json` (with a sync test)
+- SKILL.md frontmatter validation warning on `run` (missing name/description, name mismatch)
+- Richer `init` scaffold: SKILL.md frontmatter template + negative-control eval case
+- PyPI trusted-publishing workflow on version tags (`.github/workflows/publish.yml`)
+- Demo recording script (`scripts/record-demo.sh`)
+
+### Changed
+- Assertions that cannot be graded (no API key, LLM grader error) are now **skipped** and excluded from the pass rate instead of counted as failures; `grading.json` gains `method` and `skipped` fields
+- `run` warns upfront when no grader API key is set; `grade` warns that LLM verdicts may flip on re-grade
+- README restructured around the full-harness pitch, with a documented table of recognized deterministic assertion patterns
+
+### Fixed
+- Multi-agent runs no longer report a misleading `Delta: 0.0%`: `benchmark.json` now has per-agent `deltas`; the legacy `delta` field is only set for single-agent runs (otherwise `null`)
+- Removed dead `cost_usd` handling in the Claude Code output parser
+
 ## [0.1.0-alpha.3] - 2026-06-07
 
 ### Added

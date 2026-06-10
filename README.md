@@ -1,45 +1,295 @@
-# Skill Evaluation Framework
+# skill-eval
 
-A Python framework for systematically evaluating agent skills across **OpenCode**, **Claude Code**, and **Codex**.
+**Evaluate agent skills through the real coding harnesses you use every day — Claude Code, Codex, and OpenCode — not the raw API.**
+
+You wrote a `SKILL.md`. Does it actually make your agent better? skill-eval answers that with data: it installs your skill into a fresh workspace, runs the *actual agent CLI* against your test prompts (with and without the skill), grades the results with deterministic state-diff checks plus an LLM rubric, and reports the measured impact — pass rates, pass@k across repeated runs, token costs, and wall-clock time.
+
+Because the eval goes through the full harness — system prompt, skill discovery, permissions, tool use — you get exactly the behavior you'll see in daily use, including the failure mode that matters most: *the agent never triggering your skill at all*.
 
 ## Features
 
-- **Multi-agent support**: Test skills across OpenCode, Claude Code, and Codex in a single run
-- **Baseline comparison**: Automatically runs with-skill and without-skill configurations to measure skill impact
-- **State-delta grading**: Code-based checks compare pre/post git state snapshots, so they don't false-pass on pre-existing branches, commits, or PRs
-- **Scoped cleanup**: Cleanup only removes artifacts recorded in `cleanup.json`; never closes all PRs or deletes all branches
-- **Re-grading**: `skill-eval grade` re-grades existing outputs using saved `evals_meta.json` and state snapshots
-- **Negative controls**: `should_trigger: false` inverts branch/commit/push/PR assertions to catch accidental triggering
-- **Configurable concurrency**: Run multiple evals in parallel
-- **Full token/timing extraction**: Parse each agent's native output format for comprehensive metrics
-- **Workspace isolation**: Fresh temp directories with git repos for each eval run
-- **Auto skill installation**: Automatically installs SKILL.md into the correct location for each agent type
+- **Real harnesses, end to end**: OpenCode, Claude Code, and Codex CLIs, in a single run
+- **Baseline comparison**: with-skill vs. without-skill, with a per-agent delta
+- **pass@k**: `--runs N` repeats every eval and reports full-pass rate and pass@k, because agents are stochastic and single-run numbers lie
+- **State-delta grading**: code-based checks compare pre/post git state snapshots, so they don't false-pass on pre-existing branches, commits, or PRs
+- **Negative controls**: `should_trigger: false` inverts assertions to catch accidental skill triggering
+- **Honest grading**: assertions the grader can't check are *skipped*, not failed; a missing API key warns upfront instead of silently zeroing your pass rate
+- **Pinned models**: `--agent-model claude-code=haiku --agent-model codex=gpt-5-mini` makes runs reproducible across machines
+- **Scoped cleanup**: only removes artifacts recorded in `cleanup.json`; never closes unrelated PRs or deletes unrelated branches
+- **Re-grading**: `skill-eval grade` re-grades saved outputs without re-running agents
+- **Markdown reports**: paste `skill-eval report --format markdown` straight into a PR or blog post
 
 ## Installation
 
-This project uses `pyproject.toml` with optional dev dependencies. The recommended workflow is `uv`:
-
 ```bash
-cd skill-eval
-uv venv
-uv pip install -e ".[dev]"
+pip install skill-eval
 ```
 
-Or run directly via uv without activating the venv:
+Or from source with `uv`:
 
 ```bash
-uv run --extra dev skill-eval --help
+git clone https://github.com/tardigrde/skill-evals
+cd skill-evals
+uv venv && uv pip install -e ".[dev]"
 ```
 
-You can also run the module directly without installing the console script:
+You also need the agent CLIs you want to evaluate (`claude`, `codex`, `opencode`) installed and authenticated, and an `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM rubric grading.
+
+## Quick Start
 
 ```bash
-python -m skill_eval --help
+# 1. See what's available
+skill-eval list
+
+# 2. Validate an eval suite
+skill-eval validate examples/write-release-notes/evals/evals.json
+
+# 3. Run it (pin cheap models while iterating)
+skill-eval run \
+  --skill ./skills/write-release-notes \
+  --evals ./examples/write-release-notes/evals/evals.json \
+  --agent claude-code --agent-model claude-code=haiku \
+  --agent codex --agent-model codex=gpt-5-mini \
+  --runs 3
+
+# 4. Read the results
+skill-eval report --workspace ./eval-workspace/write-release-notes-workspace --show-evidence
 ```
+
+To start a suite for your own skill:
+
+```bash
+skill-eval init my-skill
+```
+
+This scaffolds `my-skill/SKILL.md` (frontmatter template), `my-skill/evals/evals.json` (one positive case and one negative control), and `my-skill/evals/files/` for fixtures.
+
+## Defining evals
+
+```json
+{
+  "skill_name": "write-release-notes",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Write release notes for the commit history in commits.txt.",
+      "expected_output": "A RELEASE_NOTES.md grouping changes by type with breaking changes highlighted.",
+      "files": ["files/commits.txt"],
+      "force_skill_invocation": true,
+      "assertions": [
+        "The file `RELEASE_NOTES.md` exists",
+        "The breaking change is mentioned prominently",
+        "The release notes do not mention any change that is not in commits.txt"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "How many commits are listed in commits.txt?",
+      "expected_output": "The skill should NOT trigger.",
+      "files": ["files/commits.txt"],
+      "should_trigger": false,
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "The agent only answered the question without creating files"
+      ]
+    }
+  ]
+}
+```
+
+A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/evals.schema.json) — point your editor at it for autocompletion, and run `skill-eval validate <file>` in CI.
+
+### Eval fields
+
+| Field | Type | Purpose |
+| --- | --- | --- |
+| `id` | int \| str | Unique id within the suite |
+| `prompt` | str | Prompt sent to the agent verbatim |
+| `expected_output` | str | Reference output for LLM rubric grading |
+| `files` | list[str] | Fixture file paths (resolved relative to the evals directory) |
+| `stage_files` | bool | If true, fixture files are also `git add`-ed before the agent runs (default: false) |
+| `assertions` | list[str] | Assertions to grade against |
+| `should_trigger` | bool | If false, branch/commit/push/PR assertions are inverted (default: true) |
+| `force_skill_invocation` | bool | If true, the prompt is prefixed with `Use the $<skill> skill.` (default: false) |
+
+## How grading works
+
+Each assertion is graded by the first matching method:
+
+1. **Deterministic** — code-based checks against the pre/post git state delta and run logs. No LLM involved.
+2. **LLM rubric** — anything the deterministic grader doesn't recognize goes to an LLM judge with the agent output, expected output, and workspace file listing.
+3. **Skipped** — if no LLM grader is configured (missing API key) or the grader errors, the assertion is marked *skipped* and excluded from the pass rate, never silently failed.
+
+### Recognized deterministic assertion patterns
+
+The deterministic grader matches assertion text against these patterns (case-insensitive):
+
+| Pattern in assertion text | Check performed |
+| --- | --- |
+| `branch` + `created`/`exists`/`new` | A new branch appeared in the state diff and is checked out |
+| `commit` + `created`/`exists`/`new` | A new commit appeared and is on the current branch |
+| `push` + `remote`/`branch`/`pushed` | The eval-created branch was pushed AND remote HEAD matches local HEAD |
+| `pr` or `pull request` | A new open PR targets the eval-created branch (corroborated by `gh pr view` when available) |
+| `file exists` or `created` + a filename | File matching the backticked/quoted name exists in the workspace |
+| `ran` + a command name (`npm`, `git`, ...) | Command name appears in the run logs |
+| `contains` or `includes` + `"quoted"`/`` `backticked` `` text | Agent output contains the text |
+| `valid json` | Agent output (or a workspace file) parses as JSON |
+
+Anything else falls through to the LLM rubric. With `should_trigger: false`, the branch/commit/push/PR checks invert: they pass only when those artifacts did **not** appear.
+
+## CLI Commands
+
+### `run`
+
+```bash
+skill-eval run \
+  --skill <skill-dir> --evals <evals.json> \
+  --agent opencode --agent claude-code --agent codex \
+  [--agent-model claude-code=haiku] [--agent-model codex=gpt-5-mini] \
+  [--harness-base-url https://openrouter.ai/api/v1] \
+  [--runs 3] [--concurrency 2] [--iteration 1] \
+  [--baseline/--no-baseline] [--cleanup] \
+  [--timeout 600] [--retries 1] \
+  [--grader-model deepseek/deepseek-v4-flash] [--grader-base-url URL] \
+  [--source-repo https://github.com/foo/bar.git] \
+  [--workspace ./eval-workspace]
+```
+
+Key options:
+
+- `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable.
+- `--harness-base-url`: injected as `ANTHROPIC_BASE_URL` (claude-code) / `OPENAI_BASE_URL` (codex, opencode) into the agent process.
+- `--runs, -n`: repeat each (eval, agent, config) N times; enables pass@k stats. Results land in `run-1/`, `run-2/`, ... subdirectories.
+- `--timeout` / `--retries`: per-run agent timeout (default 600s) and retries on timeout or non-zero exit (default 1). Also settable via `SKILL_EVAL_AGENT_TIMEOUT` / `SKILL_EVAL_AGENT_RETRIES`.
+
+### `report`
+
+```bash
+skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|markdown] [--show-evidence]
+```
+
+`--show-evidence` prints the evidence string for every failed or skipped assertion — the state diff for deterministic checks, the judge's reasoning for LLM checks. `--format markdown` emits a paste-ready table.
+
+### `compare`
+
+```bash
+skill-eval compare --workspace <skill-workspace> 1 2
+```
+
+Side-by-side pass rates of two iterations, per configuration, with the change — the feedback loop for iterating on a SKILL.md.
+
+### `validate`
+
+```bash
+skill-eval validate path/to/evals.json
+```
+
+Schema check plus referenced-fixture existence and duplicate-id detection. Exit code 1 on any problem (CI-friendly).
+
+### `list`
+
+```bash
+skill-eval list [--root .]
+```
+
+Discovers eval suites (`evals.json`) and skills (`SKILL.md`) under a directory.
+
+### `grade`
+
+```bash
+skill-eval grade --workspace <iteration-dir> [--recompute-benchmark]
+```
+
+Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Note: LLM-graded assertions are re-evaluated from scratch and may flip verdicts.
+
+### `cleanup`
+
+```bash
+skill-eval cleanup --workspace ./eval-workspace [--yes]
+```
+
+Only closes PRs and deletes remote branches recorded in `cleanup.json`. Never touches unrelated PRs, branches, or workspaces.
+
+### `init`
+
+```bash
+skill-eval init my-skill [--output ./examples]
+```
+
+## Example skills
+
+Three example skills ship with the repo, chosen to exercise different grading surfaces:
+
+| Skill | Tests | Grading surface |
+| --- | --- | --- |
+| [`commit-push-pr`](skills/commit-push-pr/SKILL.md) | git workflow automation | deterministic state-diff checks (branch/commit/push/PR); needs a `--source-repo` |
+| [`fix-failing-tests`](skills/fix-failing-tests/SKILL.md) | error recovery / iterative refinement | deterministic + file checks; fully offline |
+| [`write-release-notes`](skills/write-release-notes/SKILL.md) | subjective writing quality, anti-fabrication | LLM rubric grading; fully offline |
+
+Each has a matching eval suite under [`examples/`](examples/). `skills/` holds the artifacts being evaluated; `examples/` holds the test cases — so you can test one skill against many suites or one suite against many skill versions.
+
+## Reading results
+
+### Workspace layout
+
+```
+eval-workspace/
+└── <skill>-workspace/
+    └── iteration-1/
+        ├── evals_meta.json          # eval definitions (used by `grade`)
+        ├── cleanup.json             # manifest of artifacts created by this run
+        ├── benchmark.json           # aggregate stats per (agent, config)
+        └── eval-<id>/<agent>/<config>/   # config = with_skill | without_skill
+            ├── run-N/               # only when --runs > 1
+            ├── outputs/
+            │   ├── output.txt       # final agent output
+            │   ├── stdout.log / stderr.log
+            │   └── pre_state.json / post_state.json
+            ├── timing.json          # tokens, duration, exit_code, timed_out, retries
+            ├── grading.json         # per-assertion results
+            └── run_meta.json        # agent, with_skill, run_index, ...
+```
+
+### grading.json
+
+```json
+{
+  "assertion_results": [
+    {
+      "text": "A new git branch was created",
+      "passed": false,
+      "method": "deterministic",
+      "skipped": false,
+      "evidence": "No new branch appeared in this run. current_branch='main'"
+    }
+  ],
+  "summary": {"passed": 2, "failed": 1, "skipped": 0, "total": 3, "pass_rate": 0.667}
+}
+```
+
+To debug a failure: find `"passed": false` entries, read `evidence`, compare `pre_state.json`/`post_state.json`, then check `outputs/output.txt` for the agent's full response. Or just run `skill-eval report --show-evidence`.
+
+### Iterating on a skill
+
+1. `skill-eval run ...` → 2. `skill-eval report --show-evidence` → 3. edit SKILL.md → 4. `skill-eval run --iteration 2 ...` → 5. `skill-eval compare --workspace ... 1 2`
+
+## Environment variables
+
+- `OPENROUTER_API_KEY` / `OPENAI_API_KEY`: API key for LLM rubric grading
+- `OPENAI_BASE_URL`: custom grader endpoint (defaults to OpenRouter)
+- `SKILL_EVAL_AGENT_TIMEOUT` / `SKILL_EVAL_AGENT_RETRIES`: harness timeout/retry defaults
+- `SKILL_EVAL_KEEP_WORKSPACE`: keep per-eval workspaces for debugging
+
+## Agent-specific details
+
+| Agent | Command | Skill install path |
+| --- | --- | --- |
+| OpenCode | `opencode run --format json --dangerously-skip-permissions` | `.opencode/skills/<name>/SKILL.md` |
+| Claude Code | `claude -p --output-format json --dangerously-skip-permissions` | `.claude/skills/<name>/SKILL.md` |
+| Codex | `codex exec --json --full-auto` | `.codex/skills/<name>/SKILL.md` |
 
 ## Development
-
-Run tests and lints with the dev extras:
 
 ```bash
 uv run --extra dev pytest -q
@@ -47,361 +297,7 @@ uv run --extra dev ruff check src/ tests/
 uv run --extra dev ruff format --check src/ tests/
 ```
 
-A writable uv cache directory is required in some sandboxes:
-
-```bash
-UV_CACHE_DIR=/path/to/cache uv run --extra dev pytest -q
-```
-
-CI uses `pip install -e ".[dev]"` and runs `pytest -v` plus `ruff check` and `ruff format --check`.
-
-## Quick Start
-
-### 1. Create an eval suite
-
-```bash
-skill-eval init my-skill
-```
-
-This creates:
-```
-my-skill/
-└── evals/
-    ├── evals.json
-    └── files/
-```
-
-### 2. Define test cases in `evals.json`
-
-```json
-{
-  "skill_name": "commit-push-pr",
-  "evals": [
-    {
-      "id": "explicit-invoke",
-      "prompt": "Use the $commit-push-pr skill to commit and push my changes",
-      "expected_output": "A new branch is created, changes committed, pushed, and PR created",
-      "files": [],
-      "force_skill_invocation": true,
-      "stage_files": true,
-      "assertions": [
-        "A new git branch was created",
-        "A git commit was created",
-        "A pull request was created or the PR URL is mentioned in the output"
-      ]
-    },
-    {
-      "id": "negative-control",
-      "prompt": "Show me the git log for the last 10 commits",
-      "expected_output": "The skill should NOT trigger.",
-      "should_trigger": false,
-      "assertions": [
-        "A new git branch was created",
-        "A git commit was created",
-        "Changes were pushed to remote",
-        "A pull request was created",
-        "The output contains the word `commit` or `Initial`"
-      ]
-    }
-  ]
-}
-```
-
-The negative-control assertions are intentionally broad: they check branch, commit, push, PR, **and** content to ensure the skill did not accidentally trigger. The `should_trigger: false` flag inverts the deterministic checks so they pass only when those artifacts are absent.
-
-### 3. Run evaluations
-
-```bash
-skill-eval run \
-  --skill ./skills/commit-push-pr \
-  --evals ./examples/commit-push-pr/evals/evals.json \
-  --agent opencode \
-  --agent claude-code \
-  --agent codex \
-  --concurrency 2
-```
-
-### 4. View results
-
-```bash
-skill-eval report --workspace ./eval-workspace/commit-push-pr-workspace
-```
-
-## CLI Commands
-
-### `run` - Execute evaluations
-
-```bash
-skill-eval run \
-  --skill <path-to-skill-dir> \
-  --evals <path-to-evals.json> \
-  --agent opencode \
-  --agent claude-code \
-  --agent codex \
-  --workspace ./eval-workspace \
-  --iteration 1 \
-  --concurrency 2 \
-  --baseline \
-  --source-repo https://github.com/foo/bar.git \
-  --grader-model gpt-4o
-```
-
-**Options:**
-- `--skill, -s`: Path to skill directory containing SKILL.md (required)
-- `--evals, -e`: Path to evals.json file (required)
-- `--agent, -a`: Agent(s) to evaluate: opencode, claude-code, codex (default: opencode)
-- `--workspace, -w`: Base directory for eval workspace (default: ./eval-workspace)
-- `--iteration, -i`: Iteration number (default: 1)
-- `--concurrency, -c`: Number of parallel eval runs (default: 1)
-- `--baseline/--no-baseline`: Run without-skill baseline (default: enabled)
-- `--source-repo`: Git repo URL to clone as workspace (instead of fresh git init)
-- `--cleanup`: Run cleanup of recorded artifacts after the run
-- `--grader-model`: LLM model for rubric grading (default: `deepseek/deepseek-v4-flash`)
-- `--grader-base-url`: Custom API base URL for grader (uses OPENAI_BASE_URL env var)
-
-### `report` - Display results summary
-
-```bash
-skill-eval report --workspace ./eval-workspace/commit-push-pr-workspace
-skill-eval report --workspace ./eval-workspace/commit-push-pr-workspace --iteration 1
-```
-
-### `grade` - Re-grade existing results
-
-```bash
-skill-eval grade --workspace ./eval-workspace/commit-push-pr-workspace/iteration-1
-skill-eval grade --workspace ./eval-workspace/commit-push-pr-workspace/iteration-1 --recompute-benchmark
-```
-
-Re-grades each config using `evals_meta.json`, the pre/post state snapshots, and writes updated `grading.json` files. With `--recompute-benchmark`, also rebuilds `benchmark.json` from per-run metadata.
-
-### `cleanup` - Remove recorded eval artifacts
-
-```bash
-skill-eval cleanup --workspace ./eval-workspace
-skill-eval cleanup --iteration ./eval-workspace/commit-push-pr-workspace/iteration-1
-skill-eval cleanup --workspace ./eval-workspace --yes
-```
-
-Only closes PRs and deletes remote branches that were recorded in `cleanup.json` for the iteration. It never closes unrelated PRs or deletes unrelated branches.
-
-### `init` - Initialize eval structure
-
-```bash
-skill-eval init my-skill --output ./skills
-```
-
-### `--version` - Show version
-
-```bash
-skill-eval --version
-```
-
-## Directory Convention: `examples/` vs `skills/`
-
-The repo uses two top-level directories for a reason:
-
-- **`skills/`** — Contains the agent skill definitions (`SKILL.md` files). These are the artifacts being evaluated. Pass a skill directory to `--skill`.
-- **`examples/`** — Contains eval suites (`evals.json` + fixture files). These define the test cases, prompts, and assertions. Pass an evals file to `--evals`.
-
-The separation lets you test the same skill against different eval suites, or the same eval suite against different versions of a skill. The `init` command creates the `examples/` layout:
-
-```bash
-skill-eval init my-skill            # creates ./my-skill/evals/
-skill-eval init my-skill --output ./examples  # creates ./examples/my-skill/evals/
-```
-
-The `skills/` directory is typically managed manually or by your skill authoring workflow.
-
-## Workspace Structure
-
-Results follow this layout (per skill, per iteration, per eval, per agent, per config):
-
-```
-eval-workspace/
-└── commit-push-pr-workspace/
-    └── iteration-1/
-        ├── evals_meta.json
-        ├── cleanup.json
-        ├── benchmark.json
-        ├── eval-explicit-invoke/
-        │   ├── opencode/
-        │   │   ├── with_skill/
-        │   │   │   ├── outputs/
-        │   │   │   │   ├── output.txt
-        │   │   │   │   ├── stdout.log
-        │   │   │   │   ├── stderr.log
-        │   │   │   │   ├── pre_state.json
-        │   │   │   │   └── post_state.json
-        │   │   │   ├── timing.json
-        │   │   │   ├── grading.json
-        │   │   │   └── run_meta.json
-        │   │   └── without_skill/
-        │   │       └── ...
-        │   ├── claude-code/
-        │   │   ├── with_skill/
-        │   │   └── without_skill/
-        │   └── codex/
-        │       ├── with_skill/
-        │       └── without_skill/
-        └── eval-implicit-invoke/
-            └── ...
-```
-
-Per-config files:
-- `outputs/output.txt`: final agent output
-- `outputs/stdout.log` / `outputs/stderr.log`: raw harness I/O
-- `outputs/pre_state.json`: git/PR state snapshot captured before the agent ran
-- `outputs/post_state.json`: git/PR state snapshot captured after the agent ran
-- `timing.json`: token usage and wall-clock timing
-- `grading.json`: assertion results (deterministic + LLM)
-- `run_meta.json`: eval id, agent, with_skill, iteration, run id (used by `grade --recompute-benchmark`)
-
-Per-iteration files:
-- `evals_meta.json`: full eval case definitions used to re-grade
-- `cleanup.json`: manifest of remote branches, PR numbers, and workspace paths created by this run
-- `benchmark.json`: aggregate pass rate / time / tokens per (agent, with_skill)
-
-## Eval Schema
-
-Each entry in `evals.json` supports these fields:
-
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `id` | int \| str | Unique id within the suite |
-| `prompt` | str | Prompt sent to the agent (verbatim, with-skill mode only prepends `Use the $skill` if `force_skill_invocation` is true) |
-| `expected_output` | str | Reference output for LLM rubric grading |
-| `files` | list[str] | Fixture file paths (resolved relative to the evals directory) |
-| `stage_files` | bool | If true, fixture files are copied AND `git add`-ed before the agent runs (default: false) |
-| `assertions` | list[str] | Assertions to grade against |
-| `should_trigger` | bool | If false, branch/commit/push/PR assertions are inverted (default: true) |
-| `force_skill_invocation` | bool | If true, the prompt is rewritten to start with `Use the $<skill> skill.` (default: false) |
-
-## Assertion Types
-
-### Deterministic checks (code-based, against pre/post state deltas)
-
-- **File existence**: "package.json was created", "The file `README.md` exists"
-- **Command execution**: "Ran npm install", "git commit was executed"
-- **Content matching**: "Output contains 'success'", "Includes the phrase 'PR created'"
-- **Valid JSON**: "The output is valid JSON"
-- **Git operations**: "A new branch was created", "A commit was created"
-- **Push check**: "Changes were pushed to remote" — passes only if the eval-created branch was pushed AND the remote HEAD matches the local HEAD
-- **PR check**: "A pull request was created" — passes only if a new PR targets the eval-created branch
-
-The deterministic grader prefers persisted `pre_state.json` / `post_state.json` so that re-grading works even after the workspace is deleted.
-
-### Negative-control / `should_trigger: false`
-
-When `should_trigger: false`, the deterministic branch/commit/push/PR assertions are inverted. They PASS only if those artifacts did NOT appear during the run. This catches accidental triggering of the skill.
-
-### LLM rubric grading
-
-For assertions that can't be checked deterministically, the framework uses an LLM (configurable via `--grader-model` and `OPENAI_API_KEY` / `OPENAI_BASE_URL` env vars) to grade against a rubric.
-
-## Environment Variables
-
-- `OPENAI_API_KEY`: API key for LLM grading (required for rubric grading)
-- `OPENROUTER_API_KEY`: Alternative API key (used if `OPENAI_API_KEY` is unset)
-- `OPENAI_BASE_URL`: Custom API endpoint (optional, for Azure/OpenRouter/etc.)
-- `SKILL_EVAL_KEEP_WORKSPACE`: If set, eval workspaces are not deleted between runs
-
-## Agent-Specific Details
-
-### OpenCode
-- Command: `opencode run --format json --dangerously-skip-permissions`
-- Skill path: `.opencode/skills/<name>/SKILL.md`
-- Output: JSON events with usage data
-
-### Claude Code
-- Command: `claude -p --output-format json --dangerously-skip-permissions`
-- Skill path: `.claude/skills/<name>/SKILL.md`
-- Output: JSON with usage and cost data
-
-### Codex
-- Command: `codex exec --json --full-auto`
-- Skill path: `.codex/skills/<name>/SKILL.md`
-- Output: JSONL stream with structured events
-
-## Example: commit-push-pr skill
-
-The included example skill automates the git workflow:
-1. Detects base branch from remote
-2. Fetches and updates base branch
-3. Creates feature branch
-4. Commits changes
-5. Pushes to remote
-6. Creates PR via `gh` CLI
-
-Run it:
-```bash
-skill-eval run \
-  --skill ./skills/commit-push-pr \
-  --evals ./examples/commit-push-pr/evals/evals.json \
-  --agent opencode
-```
-
-## Iterating on Skills
-
-1. Run evals: `skill-eval run ...`
-2. Review results: `skill-eval report ...`
-3. Analyze failed assertions in `grading.json` files
-4. Update SKILL.md based on failures
-5. Re-run with incremented iteration: `skill-eval run --iteration 2 ...`
-6. Compare benchmarks across iterations
-
-## Reading `grading.json` Evidence
-
-When an assertion fails, `grading.json` contains the details you need to debug it. Each file has this structure:
-
-```json
-{
-  "assertions": [
-    {
-      "assertion": "A new git branch was created",
-      "passed": false,
-      "method": "deterministic",
-      "evidence": "pre_state.heads = ['main']; post_state.heads = ['main'] — no new branch appeared"
-    },
-    {
-      "assertion": "The output mentions the PR URL",
-      "passed": true,
-      "method": "llm",
-      "evidence": "The output contains 'https://github.com/foo/bar/pull/42'"
-    }
-  ],
-  "summary": {
-    "passed": 2,
-    "total": 3,
-    "pass_rate": 0.667
-  }
-}
-```
-
-Key fields:
-
-- **`method`**: `"deterministic"` means the grader compared `pre_state.json` and `post_state.json` snapshots. `"llm"` means an LLM graded the assertion against the rubric.
-- **`evidence`**: For deterministic checks, this shows the exact state values that caused the pass/fail. For LLM checks, this is the model's reasoning.
-- **`assertion`**: The original assertion string from `evals.json`.
-
-To debug a failure:
-1. Open `grading.json` in the failing config directory (e.g. `eval-explicit-invoke/opencode/with_skill/grading.json`)
-2. Find assertions with `"passed": false`
-3. Check `"evidence"` — deterministic failures show the state diff; LLM failures show the model's rationale
-4. Compare `pre_state.json` and `post_state.json` to see what actually changed in the workspace
-5. Check `outputs/output.txt` for the agent's full response
-
-## Cleanup Safety
-
-The `cleanup` command and `--cleanup` flag only remove artifacts recorded in `cleanup.json`. They will:
-- Close PRs whose numbers are listed in the manifest
-- Delete remote branches listed in the manifest
-- Remove local workspace paths listed in the manifest
-
-They will NOT:
-- Close all open PRs in the source repo
-- Delete all non-default branches
-- Remove unrecorded `skill-eval-*` workspaces
+A `fake` agent type exists for offline testing of the full run→grade→report pipeline (used by the CI smoke test). To record a demo cast: `./scripts/record-demo.sh`.
 
 ## License
 

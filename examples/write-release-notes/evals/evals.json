@@ -1,0 +1,44 @@
+{
+  "skill_name": "write-release-notes",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Write release notes for the commit history in commits.txt.",
+      "expected_output": "A RELEASE_NOTES.md file grouping the changes into Breaking Changes, Features, Fixes and Performance sections, with the TOML config migration highlighted as breaking, written in user-facing language, containing only changes that appear in commits.txt.",
+      "files": ["files/commits.txt"],
+      "force_skill_invocation": true,
+      "assertions": [
+        "The file `RELEASE_NOTES.md` exists",
+        "The release notes group changes into sections such as breaking changes, features, and fixes",
+        "The breaking change about switching the config file format from INI to TOML is mentioned prominently and includes migration guidance",
+        "The release notes do not mention any feature, fix, or change that is not present in commits.txt",
+        "The release notes are written in user-facing language rather than raw commit messages"
+      ]
+    },
+    {
+      "id": "implicit-invoke",
+      "prompt": "We are about to cut a release. Turn the commit history in commits.txt into polished release notes for our users.",
+      "expected_output": "A RELEASE_NOTES.md file grouping the changes into sections, with the breaking TOML config change highlighted, containing only changes that appear in commits.txt.",
+      "files": ["files/commits.txt"],
+      "assertions": [
+        "The file `RELEASE_NOTES.md` exists",
+        "The release notes group changes into sections such as breaking changes, features, and fixes",
+        "The breaking change about switching the config file format from INI to TOML is mentioned prominently",
+        "The release notes do not mention any feature, fix, or change that is not present in commits.txt"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "How many commits are listed in commits.txt? Just give me the number.",
+      "expected_output": "The skill should NOT trigger. The agent only answers the counting question (10 commits) without creating release notes.",
+      "files": ["files/commits.txt"],
+      "should_trigger": false,
+      "assertions": [
+        "A new git branch was created",
+        "A git commit was created",
+        "The agent did NOT create a RELEASE_NOTES.md file or any other new file, and only answered the counting question",
+        "The output contains \"10\""
+      ]
+    }
+  ]
+}

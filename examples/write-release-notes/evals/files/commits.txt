@@ -1,0 +1,10 @@
+f3a9c21 feat!: switch config file format from INI to TOML (BREAKING CHANGE: config.ini is no longer read; copy your settings into config.toml)
+8d2b4e7 feat: add CSV export for usage reports
+7c1a9f3 feat: add --quiet flag to suppress progress output
+6b0e8d2 fix: handle empty input file in parser without crashing
+5a9d7c1 fix: correct off-by-one error in result pagination
+1c59387 fix: escape shell arguments when invoking external tools
+0b48276 perf: cache compiled templates between renders
+2d6a498 refactor: extract retry logic into a shared helper
+4f8c6b0 docs: rewrite the installation guide
+3e7b5a9 chore: bump dependencies to latest minor versions

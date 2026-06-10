@@ -66,10 +66,24 @@ class TestSkillEvalCliSmoke:
         )
 
         assert report_result.exit_code == 0, report_result.output
-        assert "fake_with_skill" in report_result.output
-        assert "fake_without_skill" in report_result.output
         assert "fake/with_skill" in report_result.output
         assert "fake/without_skill" in report_result.output
+
+        # The rich table truncates long config names at narrow widths, so
+        # assert the full names via the markdown format.
+        md_result = runner.invoke(
+            app,
+            [
+                "report",
+                "--workspace",
+                str(workspace / "format-json-workspace"),
+                "--format",
+                "markdown",
+            ],
+        )
+        assert md_result.exit_code == 0, md_result.output
+        assert "fake_with_skill" in md_result.output
+        assert "fake_without_skill" in md_result.output
 
         init_output = tmp_path / "init-output"
         init_result = runner.invoke(app, ["init", "format-json", "--output", str(init_output)])

@@ -3,6 +3,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import yaml
+
 from skill_eval.models import AgentType
 
 SKILL_PATHS = {
@@ -20,6 +22,35 @@ class SkillInstaller:
         self.skill_md = skill_path / "SKILL.md"
         if not self.skill_md.exists():
             raise FileNotFoundError(f"SKILL.md not found in {skill_path}")
+
+    def frontmatter_problems(self) -> list[str]:
+        """Return human-readable problems with the SKILL.md frontmatter.
+
+        Empty list means the frontmatter is usable. Agents rely on ``name``
+        and ``description`` to decide when to trigger a skill, so missing
+        fields cause silent misbehavior rather than errors.
+        """
+        text = self.skill_md.read_text()
+        if not text.startswith("---"):
+            return ["SKILL.md has no YAML frontmatter block (must start with '---')"]
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return ["SKILL.md frontmatter is not closed with '---'"]
+        try:
+            data = yaml.safe_load(parts[1])
+        except yaml.YAMLError as e:
+            return [f"SKILL.md frontmatter is not valid YAML: {e}"]
+        if not isinstance(data, dict):
+            return ["SKILL.md frontmatter is not a YAML mapping"]
+        problems = []
+        for field in ("name", "description"):
+            if not data.get(field):
+                problems.append(f"SKILL.md frontmatter is missing '{field}'")
+        if data.get("name") and data["name"] != self.skill_name:
+            problems.append(
+                f"SKILL.md frontmatter name '{data['name']}' does not match skill directory name '{self.skill_name}'"
+            )
+        return problems
 
     def install(self, workspace: Path, agent_type: AgentType) -> Path:
         target_dirs = SKILL_PATHS[agent_type]

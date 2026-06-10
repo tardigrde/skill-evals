@@ -184,6 +184,7 @@ class DeterministicGrader:
             text=assertion,
             passed=False,
             evidence=f"Could not deterministically check: {assertion}",
+            method="unknown",
         )
 
     def _resolve_workspace(self, output_dir: Path, workspace: Path | None) -> Path:
@@ -584,6 +585,11 @@ class LLMGrader:
         self.base_url = base_url
         self._client = None
 
+    @staticmethod
+    def has_credentials() -> bool:
+        """True if an API key for the grader is available in the environment."""
+        return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+
     @property
     def client(self):
         if self._client is None:
@@ -649,6 +655,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
                         text=r["text"],
                         passed=r["passed"],
                         evidence=r["evidence"],
+                        method="llm",
                     )
                 )
                 returned_texts.add(r["text"])
@@ -659,11 +666,23 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
                             text=a,
                             passed=False,
                             evidence="LLM grader did not return a result for this assertion",
+                            method="llm",
                         )
                     )
             return results
         except Exception as e:
-            return [AssertionResult(text=a, passed=False, evidence=f"LLM grading error: {e}") for a in assertions]
+            # A grader failure is not an agent failure: mark the assertions as
+            # skipped so they don't drag down the pass rate.
+            return [
+                AssertionResult(
+                    text=a,
+                    passed=False,
+                    evidence=f"LLM grading error (assertion skipped, not failed): {e}",
+                    method="llm",
+                    skipped=True,
+                )
+                for a in assertions
+            ]
 
     def _list_workspace_files(self, workspace: Path) -> str:
         files = []
@@ -701,12 +720,31 @@ def grade_assertions(
         undetermined_texts = [r.text for r in undetermined]
         llm_results = llm_grader.grade(undetermined_texts, agent_output, output_dir, expected_output)
         all_results = determined + llm_results
+    elif undetermined:
+        # No LLM grader available: skip these assertions instead of failing
+        # them, so a missing API key doesn't masquerade as agent failure.
+        skipped_results = [
+            AssertionResult(
+                text=r.text,
+                passed=False,
+                evidence=(
+                    "Not deterministically checkable and no LLM grader configured "
+                    "(set OPENROUTER_API_KEY or OPENAI_API_KEY); assertion skipped"
+                ),
+                method="skipped",
+                skipped=True,
+            )
+            for r in undetermined
+        ]
+        all_results = determined + skipped_results
     else:
         all_results = det_results
 
     passed = sum(1 for r in all_results if r.passed)
-    failed = sum(1 for r in all_results if not r.passed)
+    skipped = sum(1 for r in all_results if r.skipped)
+    failed = sum(1 for r in all_results if not r.passed and not r.skipped)
     total = len(all_results)
+    graded = total - skipped
 
     return GradingResult(
         assertion_results=all_results,
@@ -714,6 +752,7 @@ def grade_assertions(
             passed=passed,
             failed=failed,
             total=total,
-            pass_rate=passed / total if total > 0 else 0.0,
+            pass_rate=passed / graded if graded > 0 else 0.0,
+            skipped=skipped,
         ),
     )

@@ -1,0 +1,83 @@
+{
+  "$defs": {
+    "EvalCase": {
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Id"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "expected_output": {
+          "title": "Expected Output",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "assertions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Assertions",
+          "type": "array"
+        },
+        "should_trigger": {
+          "default": true,
+          "title": "Should Trigger",
+          "type": "boolean"
+        },
+        "force_skill_invocation": {
+          "default": false,
+          "title": "Force Skill Invocation",
+          "type": "boolean"
+        },
+        "stage_files": {
+          "default": false,
+          "title": "Stage Files",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "prompt",
+        "expected_output"
+      ],
+      "title": "EvalCase",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "skill_name": {
+      "title": "Skill Name",
+      "type": "string"
+    },
+    "evals": {
+      "items": {
+        "$ref": "#/$defs/EvalCase"
+      },
+      "title": "Evals",
+      "type": "array"
+    }
+  },
+  "required": [
+    "skill_name",
+    "evals"
+  ],
+  "title": "skill-eval eval suite",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

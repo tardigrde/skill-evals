@@ -5,8 +5,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from skill_eval.models import AgentType, EvalCase
 from skill_eval.runner import EvalRunner
 
@@ -24,7 +22,7 @@ class TestPromptConstruction:
         class FakeHarness:
             agent_type = None
 
-            def __init__(self, agent_type=None, workspace=None, model=None):
+            def __init__(self, agent_type=None, workspace=None, model=None, **kwargs):
                 pass
 
             def run(self, prompt, output_dir):
@@ -60,7 +58,7 @@ class TestPromptConstruction:
         class FakeHarness:
             agent_type = None
 
-            def __init__(self, agent_type=None, workspace=None, model=None):
+            def __init__(self, agent_type=None, workspace=None, model=None, **kwargs):
                 pass
 
             def run(self, prompt, output_dir):
@@ -101,7 +99,7 @@ class TestPromptConstruction:
         class FakeHarness:
             agent_type = None
 
-            def __init__(self, agent_type=None, workspace=None, model=None):
+            def __init__(self, agent_type=None, workspace=None, model=None, **kwargs):
                 pass
 
             def run(self, prompt, output_dir):
@@ -137,7 +135,7 @@ class TestStateCapture:
         class FakeHarness:
             agent_type = None
 
-            def __init__(self, agent_type=None, workspace=None, model=None):
+            def __init__(self, agent_type=None, workspace=None, model=None, **kwargs):
                 self.workspace = workspace
 
             def run(self, prompt, output_dir):
@@ -778,8 +776,7 @@ class TestComputeBenchmark:
         assert res.delta.time_seconds == -10.0
         assert res.delta.tokens == -100.0
 
-    @pytest.mark.xfail(reason="known bug: compute_benchmark returns 0.0 delta for multi-agent runs", strict=False)
-    def test_compute_benchmark_multi_agent_zero_delta_known_bug(self):
+    def test_compute_benchmark_multi_agent_per_agent_deltas(self):
         from skill_eval.runner import compute_benchmark
 
         results = {
@@ -809,7 +806,10 @@ class TestComputeBenchmark:
             },
         }
         res = compute_benchmark(results, [AgentType.OPENCODE, AgentType.CLAUDE_CODE], with_baseline=True)
-        # When the bug is fixed, these should be non-zero (delta between with_skill and without_skill)
-        assert res.delta.pass_rate == 0.0
-        assert res.delta.time_seconds == 0.0
-        assert res.delta.tokens == 0.0
+        # Multi-agent runs get a per-agent delta; the legacy single-agent
+        # field is None instead of a misleading 0.0.
+        assert res.delta is None
+        for agent in ("opencode", "claude-code"):
+            assert res.deltas[agent].pass_rate == 1.0
+            assert res.deltas[agent].time_seconds == -10.0
+            assert res.deltas[agent].tokens == -100.0

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -9,13 +10,31 @@ from typing import Optional
 
 from skill_eval.models import AgentType, TimingData
 
+DEFAULT_TIMEOUT_SECONDS = 600
+DEFAULT_MAX_RETRIES = 1
+RETRY_BACKOFF_SECONDS = 2.0
+
 
 class AgentHarness(ABC):
     agent_type: AgentType
+    # Environment variable each agent CLI reads its API base URL from.
+    base_url_env: Optional[str] = None
 
-    def __init__(self, workspace: Path, model: Optional[str] = None):
+    def __init__(
+        self,
+        workspace: Path,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        timeout: Optional[int] = None,
+        max_retries: Optional[int] = None,
+    ):
         self.workspace = workspace
         self.model = model
+        self.base_url = base_url
+        self.timeout = timeout or int(os.environ.get("SKILL_EVAL_AGENT_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+        if max_retries is None:
+            max_retries = int(os.environ.get("SKILL_EVAL_AGENT_RETRIES", DEFAULT_MAX_RETRIES))
+        self.max_retries = max_retries
 
     @abstractmethod
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
@@ -25,27 +44,61 @@ class AgentHarness(ABC):
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
         pass
 
+    def _build_env(self) -> Optional[dict[str, str]]:
+        if self.base_url and self.base_url_env:
+            env = dict(os.environ)
+            env[self.base_url_env] = self.base_url
+            return env
+        return None
+
     def run(self, prompt: str, output_dir: Path) -> tuple[str, TimingData, str, str]:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         cmd = self.build_command(prompt, output_dir)
+        env = self._build_env()
 
+        attempts = self.max_retries + 1
+        stdout = ""
+        stderr = ""
+        exit_code: Optional[int] = None
+        timed_out = False
+        retries_used = 0
         start = time.time()
-        result = subprocess.run(
-            cmd,
-            cwd=self.workspace,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        duration_ms = int((time.time() - start) * 1000)
 
-        stdout = result.stdout or ""
-        stderr = result.stderr or ""
+        for attempt in range(attempts):
+            if attempt > 0:
+                retries_used = attempt
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=self.workspace,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    env=env,
+                )
+                stdout = result.stdout or ""
+                stderr = result.stderr or ""
+                exit_code = result.returncode
+                timed_out = False
+                if result.returncode == 0:
+                    break
+            except subprocess.TimeoutExpired as e:
+                stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+                stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+                stderr += f"\n[skill-eval] agent timed out after {self.timeout}s (attempt {attempt + 1}/{attempts})"
+                exit_code = None
+                timed_out = True
+
+        duration_ms = int((time.time() - start) * 1000)
 
         final_output, timing = self.parse_output(stdout, stderr)
         if timing.duration_ms == 0:
             timing.duration_ms = duration_ms
+        timing.exit_code = exit_code
+        timing.timed_out = timed_out
+        timing.retries = retries_used
 
         with open(output_dir / "stdout.log", "w") as f:
             f.write(stdout)
@@ -57,6 +110,7 @@ class AgentHarness(ABC):
 
 class OpenCodeHarness(AgentHarness):
     agent_type = AgentType.OPENCODE
+    base_url_env = "OPENAI_BASE_URL"
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -107,6 +161,7 @@ class OpenCodeHarness(AgentHarness):
 
 class ClaudeCodeHarness(AgentHarness):
     agent_type = AgentType.CLAUDE_CODE
+    base_url_env = "ANTHROPIC_BASE_URL"
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -137,9 +192,6 @@ class ClaudeCodeHarness(AgentHarness):
                 duration_s = data.get("duration_ms", 0)
                 if duration_s:
                     timing.duration_ms = duration_s
-                cost = data.get("cost_usd", 0)
-                if cost:
-                    timing.total_tokens = timing.total_tokens or 0
         except json.JSONDecodeError:
             final_text = stdout
 
@@ -148,6 +200,7 @@ class ClaudeCodeHarness(AgentHarness):
 
 class CodexHarness(AgentHarness):
     agent_type = AgentType.CODEX
+    base_url_env = "OPENAI_BASE_URL"
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -210,7 +263,9 @@ class FakeHarness(AgentHarness):
 
         stdout = final_output
         stderr = ""
-        timing = TimingData(total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1)
+        timing = TimingData(
+            total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1, exit_code=0
+        )
 
         with open(output_dir / "stdout.log", "w") as f:
             f.write(stdout)
@@ -228,6 +283,13 @@ HARNESSES: dict[AgentType, type[AgentHarness]] = {
 }
 
 
-def get_harness(agent_type: AgentType, workspace: Path, model: Optional[str] = None) -> AgentHarness:
+def get_harness(
+    agent_type: AgentType,
+    workspace: Path,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: Optional[int] = None,
+    max_retries: Optional[int] = None,
+) -> AgentHarness:
     cls = HARNESSES[agent_type]
-    return cls(workspace, model)
+    return cls(workspace, model, base_url=base_url, timeout=timeout, max_retries=max_retries)

@@ -58,6 +58,7 @@ class RunMeta(BaseModel):
     skill_name: str = ""
     source_repo: Optional[str] = None
     run_id: str = ""
+    run_index: int = 1
 
 
 class CleanupManifest(BaseModel):
@@ -74,12 +75,17 @@ class TimingData(BaseModel):
     output_tokens: int = 0
     cached_tokens: int = 0
     duration_ms: int = 0
+    exit_code: Optional[int] = None
+    timed_out: bool = False
+    retries: int = 0
 
 
 class AssertionResult(BaseModel):
     text: str
     passed: bool
     evidence: str
+    method: str = "deterministic"
+    skipped: bool = False
 
 
 class GradingResult(BaseModel):
@@ -92,6 +98,7 @@ class GradingSummary(BaseModel):
     failed: int
     total: int
     pass_rate: float
+    skipped: int = 0
 
 
 GradingResult.model_rebuild()
@@ -112,6 +119,11 @@ class BenchmarkStats(BaseModel):
     pass_rate: StatsPair
     time_seconds: StatsPair
     tokens: StatsPair
+    # Fraction of runs where ALL assertions passed (pass@1 estimate).
+    full_pass_rate: float = 0.0
+    # Fraction of evals where at least one of k runs fully passed.
+    pass_at_k: float = 0.0
+    k: int = 1
 
 
 class StatsPair(BaseModel):
@@ -121,7 +133,11 @@ class StatsPair(BaseModel):
 
 class BenchmarkResult(BaseModel):
     run_summary: dict[str, BenchmarkStats]
-    delta: DeltaStats
+    # Per-agent with_skill - without_skill deltas, keyed by agent value.
+    deltas: dict[str, DeltaStats] = Field(default_factory=dict)
+    # Kept for backward compatibility: equals the single agent's delta when
+    # exactly one agent was run, otherwise None.
+    delta: Optional[DeltaStats] = None
 
 
 class DeltaStats(BaseModel):
