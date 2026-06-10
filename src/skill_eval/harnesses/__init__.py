@@ -51,6 +51,38 @@ class AgentHarness(ABC):
             return env
         return None
 
+    def _workspace_fingerprint(self) -> Optional[tuple[str, str]]:
+        """(HEAD sha, porcelain status) of the workspace, or None outside git.
+
+        Used to refuse retries after a failed attempt that already mutated
+        the workspace — re-running there would grade the union of both
+        attempts' side effects.
+        """
+        try:
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=15,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if head.returncode != 0 or status.returncode != 0:
+            return None
+        return (head.stdout.strip(), status.stdout)
+
     def run(self, prompt: str, output_dir: Path) -> tuple[str, TimingData, str, str]:
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,6 +96,7 @@ class AgentHarness(ABC):
         timed_out = False
         retries_used = 0
         start = time.time()
+        fingerprint_before = self._workspace_fingerprint()
 
         for attempt in range(attempts):
             if attempt > 0:
@@ -75,6 +108,7 @@ class AgentHarness(ABC):
                     cwd=self.workspace,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
                     timeout=self.timeout,
                     env=env,
                 )
@@ -91,6 +125,14 @@ class AgentHarness(ABC):
                 exit_code = None
                 timed_out = True
 
+            # Only retry into a pristine workspace: if the failed attempt
+            # already committed/wrote files, a second run would produce a
+            # graded union of both attempts.
+            if attempt < attempts - 1 and fingerprint_before is not None:
+                if self._workspace_fingerprint() != fingerprint_before:
+                    stderr += "\n[skill-eval] not retrying: the failed attempt modified the workspace"
+                    break
+
         duration_ms = int((time.time() - start) * 1000)
 
         final_output, timing = self.parse_output(stdout, stderr)
@@ -100,9 +142,9 @@ class AgentHarness(ABC):
         timing.timed_out = timed_out
         timing.retries = retries_used
 
-        with open(output_dir / "stdout.log", "w") as f:
+        with open(output_dir / "stdout.log", "w", encoding="utf-8") as f:
             f.write(stdout)
-        with open(output_dir / "stderr.log", "w") as f:
+        with open(output_dir / "stderr.log", "w", encoding="utf-8") as f:
             f.write(stderr)
 
         return final_output, timing, stdout, stderr
@@ -267,9 +309,9 @@ class FakeHarness(AgentHarness):
             total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1, exit_code=0
         )
 
-        with open(output_dir / "stdout.log", "w") as f:
+        with open(output_dir / "stdout.log", "w", encoding="utf-8") as f:
             f.write(stdout)
-        with open(output_dir / "stderr.log", "w") as f:
+        with open(output_dir / "stderr.log", "w", encoding="utf-8") as f:
             f.write(stderr)
 
         return final_output, timing, stdout, stderr

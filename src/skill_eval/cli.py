@@ -171,6 +171,9 @@ def _parse_agent_models(specs: list[str], agent_types: list[AgentType]) -> dict[
                 raise typer.Exit(1)
             mapping[agent] = model.strip()
         else:
+            if not spec.strip():
+                console.print(f"[red]Empty model in --agent-model '{spec}'[/red]")
+                raise typer.Exit(1)
             for agent in agent_types:
                 mapping.setdefault(agent, spec.strip())
     return mapping
@@ -345,7 +348,7 @@ def grade(
         )
         raise typer.Exit(1)
 
-    with open(meta_path) as f:
+    with open(meta_path, encoding="utf-8") as f:
         meta = json.load(f)
 
     eval_lookup: dict[str, dict] = {}
@@ -389,7 +392,7 @@ def grade(
                 )
 
                 grading_path = config_dir / "grading.json"
-                with open(grading_path, "w") as f:
+                with open(grading_path, "w", encoding="utf-8") as f:
                     json.dump(grading.model_dump(), f, indent=2)
 
                 console.print(
@@ -407,7 +410,7 @@ def grade(
         benchmark = compute_benchmark(
             results, agent_types, with_baseline=any(not r.get("with_skill", True) for r in results.values())
         )
-        with open(workspace / "benchmark.json", "w") as f:
+        with open(workspace / "benchmark.json", "w", encoding="utf-8") as f:
             json.dump(benchmark.model_dump(), f, indent=2)
         console.print("[green]benchmark.json recomputed[/green]")
     else:
@@ -455,9 +458,9 @@ def _collect_results(workspace: Path) -> dict[str, dict]:
                 timing_path = config_dir / "timing.json"
                 if not grading_path.exists() or not timing_path.exists():
                     continue
-                with open(grading_path) as f:
+                with open(grading_path, encoding="utf-8") as f:
                     grading = json.load(f)
-                with open(timing_path) as f:
+                with open(timing_path, encoding="utf-8") as f:
                     timing = json.load(f)
 
                 meta_path = config_dir / "run_meta.json"
@@ -573,7 +576,7 @@ def _print_eval_details(iter_dir: Path, show_evidence: bool, markdown: bool) -> 
                 grading_path = config_dir / "grading.json"
                 if not grading_path.exists():
                     continue
-                with open(grading_path) as f:
+                with open(grading_path, encoding="utf-8") as f:
                     grading = json.load(f)
                 summary = grading.get("summary", {})
                 label = f"{agent_dir.name}/{config_dir.relative_to(agent_dir)}"
@@ -633,7 +636,7 @@ def report(
             console.print(f"[yellow]No benchmark.json in {iter_dir.name}[/yellow]")
             continue
 
-        with open(benchmark_path) as f:
+        with open(benchmark_path, encoding="utf-8") as f:
             benchmark = json.load(f)
 
         if markdown:
@@ -657,7 +660,7 @@ def compare(
         if not path.exists():
             console.print(f"[red]No benchmark.json for iteration-{n} in {workspace}[/red]")
             raise typer.Exit(1)
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             benchmarks[n] = json.load(f)
 
     summary_a = benchmarks[iteration_a].get("run_summary", {})
@@ -822,7 +825,7 @@ def init(
     }
 
     evals_path = evals_dir / "evals.json"
-    with open(evals_path, "w") as f:
+    with open(evals_path, "w", encoding="utf-8") as f:
         json.dump(example_evals, f, indent=2)
 
     (evals_dir / "files").mkdir(exist_ok=True)

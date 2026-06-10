@@ -185,7 +185,8 @@ class TestHarnessResilience:
         ):
             _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
 
-        assert len(attempts) == 2
+        agent_calls = [c for c in attempts if c and c[0] == "codex"]
+        assert len(agent_calls) == 2
         assert timing.exit_code == 1
         assert timing.retries == 1
         assert timing.timed_out is False
@@ -212,7 +213,8 @@ class TestHarnessResilience:
         with patch("skill_eval.harnesses.subprocess.run", side_effect=fake_run) as mocked:
             _, timing, _, _ = harness.run("prompt", tmp_path / "out")
 
-        assert mocked.call_count == 1
+        agent_calls = [c for c in mocked.call_args_list if c.args[0] and c.args[0][0] == "codex"]
+        assert len(agent_calls) == 1
         assert timing.exit_code == 0
         assert timing.retries == 0
 
@@ -444,3 +446,44 @@ class TestLLMGraderWorkspaceContext:
         listing = grader._list_workspace_files(tmp_path)
         assert "RELEASE_NOTES.md" in listing
         assert "SKILL.md" not in listing
+
+
+class TestRetryWorkspaceGuard:
+    class _ScriptHarness(CodexHarness):
+        """Harness whose 'agent' is a shell script, so the retry loop runs
+        for real while git fingerprinting hits the actual workspace."""
+
+        script: str = "exit 1"
+
+        def build_command(self, prompt, output_dir):
+            return ["bash", "-c", self.script]
+
+    def test_no_retry_when_failed_attempt_mutated_workspace(self, git_workspace, tmp_path):
+        harness = self._ScriptHarness(git_workspace, max_retries=2)
+        harness.script = "echo mutated > newfile.txt; exit 1"
+
+        with patch("skill_eval.harnesses.time.sleep"):
+            _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
+
+        assert timing.exit_code == 1
+        assert timing.retries == 0
+        assert "not retrying" in stderr
+        # Only one attempt ran: the mutation marker exists exactly once.
+        assert (git_workspace / "newfile.txt").read_text() == "mutated\n"
+
+    def test_retry_proceeds_when_workspace_clean(self, git_workspace, tmp_path):
+        harness = self._ScriptHarness(git_workspace, max_retries=2)
+        harness.script = "exit 1"
+
+        with patch("skill_eval.harnesses.time.sleep"):
+            _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
+
+        assert timing.exit_code == 1
+        assert timing.retries == 2
+        assert "not retrying" not in stderr
+
+
+class TestEmptyAgentModelSpec:
+    def test_blank_bare_spec_rejected(self):
+        with pytest.raises(Exception):
+            _parse_agent_models(["  "], [AgentType.CODEX])

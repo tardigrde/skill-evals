@@ -72,7 +72,7 @@ class EvalRunner:
         self.llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url) if grader_model else None
 
     def _load_suite(self) -> EvalSuite:
-        with open(self.evals_path) as f:
+        with open(self.evals_path, encoding="utf-8") as f:
             data = json.load(f)
         return EvalSuite(**data)
 
@@ -131,11 +131,19 @@ class EvalRunner:
 
         benchmark = self._compute_benchmark(results, iteration_dir)
 
-        with open(iteration_dir / "benchmark.json", "w") as f:
+        if self.with_baseline:
+            for agent_type in self.agents:
+                if agent_type.value not in benchmark.deltas:
+                    console.print(
+                        f"[yellow]Warning: no with/without-skill delta for {agent_type.value} — "
+                        f"all of its runs in one config errored[/yellow]"
+                    )
+
+        with open(iteration_dir / "benchmark.json", "w", encoding="utf-8") as f:
             json.dump(benchmark.model_dump(), f, indent=2)
 
         manifest = self._build_cleanup_manifest(cleanup_entries, iteration_dir)
-        with open(iteration_dir / "cleanup.json", "w") as f:
+        with open(iteration_dir / "cleanup.json", "w", encoding="utf-8") as f:
             json.dump(manifest.model_dump(exclude_none=True), f, indent=2)
 
         console.print(f"\n[green]Results saved to {iteration_dir}[/green]")
@@ -147,7 +155,7 @@ class EvalRunner:
             "evals": [eval_case.model_dump() for eval_case in self.suite.evals],
             "source_repo": self.source_repo,
         }
-        with open(iteration_dir / "evals_meta.json", "w") as f:
+        with open(iteration_dir / "evals_meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
 
     def _build_cleanup_manifest(self, entries: list[CleanupManifest], iteration_dir: Path) -> CleanupManifest:
@@ -223,20 +231,20 @@ class EvalRunner:
         prompt = self._build_prompt(eval_case, with_skill)
 
         pre_state = capture_git_state(workspace, source_repo=self.source_repo)
-        with open(output_dir / "pre_state.json", "w") as f:
+        with open(output_dir / "pre_state.json", "w", encoding="utf-8") as f:
             json.dump(pre_state.model_dump(), f, indent=2)
 
         agent_output, timing, stdout, stderr = harness.run(prompt, output_dir)
 
         post_state = capture_git_state(workspace, source_repo=self.source_repo)
-        with open(output_dir / "post_state.json", "w") as f:
+        with open(output_dir / "post_state.json", "w", encoding="utf-8") as f:
             json.dump(post_state.model_dump(), f, indent=2)
 
-        with open(output_dir / "output.txt", "w") as f:
+        with open(output_dir / "output.txt", "w", encoding="utf-8") as f:
             f.write(agent_output)
 
         timing_path = output_dir.parent / "timing.json"
-        with open(timing_path, "w") as f:
+        with open(timing_path, "w", encoding="utf-8") as f:
             json.dump(timing.model_dump(), f, indent=2)
 
         run_meta = RunMeta(
@@ -250,7 +258,7 @@ class EvalRunner:
             run_index=run_index,
         )
         meta_path = output_dir.parent / "run_meta.json"
-        with open(meta_path, "w") as f:
+        with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(run_meta.model_dump(), f, indent=2)
 
         grading = grade_assertions(
@@ -266,7 +274,7 @@ class EvalRunner:
         )
 
         grading_path = output_dir.parent / "grading.json"
-        with open(grading_path, "w") as f:
+        with open(grading_path, "w", encoding="utf-8") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
         cleanup_entry = self._build_cleanup_entry(pre_state, post_state)

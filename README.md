@@ -201,7 +201,7 @@ Discovers eval suites (`evals.json`) and skills (`SKILL.md`) under a directory.
 skill-eval grade --workspace <iteration-dir> [--recompute-benchmark]
 ```
 
-Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Note: LLM-graded assertions are re-evaluated from scratch and may flip verdicts.
+Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Two caveats: LLM-graded assertions are re-evaluated from scratch and may flip verdicts, and because the original agent workspace is deleted after the run, the judge re-grades from the saved artifacts (agent output, logs) rather than the live workspace files.
 
 ### `cleanup`
 

@@ -711,14 +711,13 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
 
     def _workspace_files(self, workspace: Path) -> list[Path]:
         files = []
-        for f in sorted(workspace.rglob("*")):
-            if not f.is_file():
-                continue
-            rel_parts = f.relative_to(workspace).parts
-            if any(part in self._EXCLUDED_DIRS for part in rel_parts):
-                continue
-            files.append(f)
-        return files
+        for root, dirs, filenames in os.walk(workspace):
+            # Prune in-place so excluded trees are never traversed at all
+            # (rglob would walk a full .git or node_modules before filtering).
+            dirs[:] = [d for d in dirs if d not in self._EXCLUDED_DIRS]
+            for filename in filenames:
+                files.append(Path(root) / filename)
+        return sorted(files)
 
     def _list_workspace_files(self, workspace: Path) -> str:
         files = []
@@ -740,7 +739,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
             try:
                 if f.stat().st_size > max_bytes:
                     continue
-                content = f.read_text()
+                content = f.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
             rel = f.relative_to(workspace)
