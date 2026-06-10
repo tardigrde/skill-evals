@@ -422,3 +422,25 @@ class TestAssertionRouting:
         )
         assert result.passed is True
         assert "RELEASE_NOTES.md" in result.evidence
+
+
+class TestLLMGraderWorkspaceContext:
+    def test_small_workspace_files_are_inlined_and_skill_dirs_excluded(self, tmp_path):
+        from skill_eval.graders import LLMGrader
+
+        (tmp_path / "RELEASE_NOTES.md").write_text("# Release Notes\n\n## Features\n- thing")
+        skill_dir = tmp_path / ".claude" / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("secret skill text")
+        (tmp_path / "big.bin").write_bytes(b"x" * 10_000)
+
+        grader = LLMGrader()
+        contents = grader._read_workspace_files(tmp_path)
+        assert "RELEASE_NOTES.md" in contents
+        assert "## Features" in contents
+        assert "secret skill text" not in contents
+        assert "big.bin" not in contents
+
+        listing = grader._list_workspace_files(tmp_path)
+        assert "RELEASE_NOTES.md" in listing
+        assert "SKILL.md" not in listing

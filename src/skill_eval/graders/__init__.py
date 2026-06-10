@@ -624,12 +624,15 @@ class LLMGrader:
         agent_output: str,
         output_dir: Path,
         expected_output: str,
+        workspace: Path | None = None,
     ) -> list[AssertionResult]:
         if not assertions:
             return []
 
-        workspace = output_dir.parent.parent if "with_skill" in str(output_dir) else output_dir.parent
+        if workspace is None or not workspace.exists():
+            workspace = output_dir.parent.parent if "with_skill" in str(output_dir) else output_dir.parent
         file_listing = self._list_workspace_files(workspace)
+        file_contents = self._read_workspace_files(workspace)
 
         prompt = f"""You are grading an AI agent's output against specific assertions.
 
@@ -642,6 +645,9 @@ class LLMGrader:
 ## Workspace Files
 {file_listing}
 
+## Workspace File Contents
+{file_contents}
+
 ## Assertions to Grade
 {chr(10).join(f"{i + 1}. {a}" for i, a in enumerate(assertions))}
 
@@ -652,7 +658,7 @@ For each assertion, respond with JSON:
   ]
 }}
 
-Be strict: only mark PASS if there is clear evidence. Quote the output in evidence."""
+Be strict: only mark PASS if there is clear evidence. Quote the output or file contents in evidence."""
 
         try:
             response = self.client.chat.completions.create(
@@ -699,17 +705,47 @@ Be strict: only mark PASS if there is clear evidence. Quote the output in eviden
                 for a in assertions
             ]
 
+    # Skill-install and VCS dirs: listing them would leak the skill text into
+    # the judge's context and drown out the agent's actual artifacts.
+    _EXCLUDED_DIRS = (".git", ".claude", ".opencode", ".codex", ".fake")
+
+    def _workspace_files(self, workspace: Path) -> list[Path]:
+        files = []
+        for f in sorted(workspace.rglob("*")):
+            if not f.is_file():
+                continue
+            rel_parts = f.relative_to(workspace).parts
+            if any(part in self._EXCLUDED_DIRS for part in rel_parts):
+                continue
+            files.append(f)
+        return files
+
     def _list_workspace_files(self, workspace: Path) -> str:
         files = []
-        for f in workspace.rglob("*"):
-            if f.is_file() and ".git" not in str(f):
-                try:
-                    rel = f.relative_to(workspace)
-                    size = f.stat().st_size
-                    files.append(f"{rel} ({size} bytes)")
-                except Exception:
-                    continue
+        for f in self._workspace_files(workspace):
+            try:
+                rel = f.relative_to(workspace)
+                size = f.stat().st_size
+                files.append(f"{rel} ({size} bytes)")
+            except Exception:
+                continue
         return "\n".join(files[:50]) if files else "(empty workspace)"
+
+    def _read_workspace_files(self, workspace: Path, max_files: int = 10, max_bytes: int = 4096) -> str:
+        """Inline small text files so the judge can grade content assertions
+        (e.g. "RELEASE_NOTES.md groups changes by type") against the actual
+        artifacts, not just the agent's final message."""
+        sections = []
+        for f in self._workspace_files(workspace)[:max_files]:
+            try:
+                if f.stat().st_size > max_bytes:
+                    continue
+                content = f.read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            rel = f.relative_to(workspace)
+            sections.append(f"### {rel}\n```\n{content}\n```")
+        return "\n\n".join(sections) if sections else "(no readable files)"
 
 
 def grade_assertions(
@@ -733,7 +769,9 @@ def grade_assertions(
 
     if undetermined and llm_grader:
         undetermined_texts = [r.text for r in undetermined]
-        llm_results = llm_grader.grade(undetermined_texts, agent_output, output_dir, expected_output)
+        llm_results = llm_grader.grade(
+            undetermined_texts, agent_output, output_dir, expected_output, workspace=workspace
+        )
         all_results = determined + llm_results
     elif undetermined:
         # No LLM grader available: skip these assertions instead of failing
