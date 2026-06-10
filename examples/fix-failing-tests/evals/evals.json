@@ -1,0 +1,54 @@
+{
+  "skill_name": "fix-failing-tests",
+  "evals": [
+    {
+      "id": "explicit-invoke",
+      "prompt": "Use the $fix-failing-tests skill. The tests are failing and I need them fixed.",
+      "expected_output": "The agent runs the test suite, identifies all 8 failing tests across 3 functions (average, factorial, is_palindrome), reads the source code, fixes all 3 bugs, and re-runs tests until all pass.",
+      "files": ["files/calculator.py", "files/test_calculator.py", "files/conftest.py"],
+      "force_skill_invocation": true,
+      "assertions": [
+        "The test suite was run with pytest or unittest",
+        "The source file calculator.py was modified (not test_calculator.py)",
+        "The output shows all tests passing after the fixes",
+        "The agent diagnosed the root cause by reading both test and source files"
+      ]
+    },
+    {
+      "id": "implicit-invoke",
+      "prompt": "Something is wrong with my calculator code. The tests keep failing. Can you figure out what's going on?",
+      "expected_output": "The agent automatically triggers the skill, runs the tests, diagnoses the bugs, and fixes the source code.",
+      "files": ["files/calculator.py", "files/test_calculator.py", "files/conftest.py"],
+      "assertions": [
+        "The test suite was run with pytest or unittest",
+        "The source file calculator.py was modified (not test_calculator.py)",
+        "The output shows all tests passing after the fixes",
+        "The agent diagnosed the root cause by reading both test and source files"
+      ]
+    },
+    {
+      "id": "contextual-invoke",
+      "prompt": "I wrote a calculator module but something is broken. Can you run the tests and fix whatever is wrong?",
+      "expected_output": "The agent discovers the test file, runs it, identifies all failures, and fixes the source code.",
+      "files": ["files/calculator.py", "files/test_calculator.py", "files/conftest.py"],
+      "assertions": [
+        "The test suite was run with pytest or unittest",
+        "The source file calculator.py was modified (not test_calculator.py)",
+        "The output shows all tests passing after the fixes",
+        "The agent diagnosed the root cause by reading both test and source files"
+      ]
+    },
+    {
+      "id": "negative-control",
+      "prompt": "Show me the contents of calculator.py",
+      "expected_output": "The skill should NOT trigger. The agent should simply read and display the file contents without running tests or modifying code.",
+      "files": ["files/calculator.py"],
+      "should_trigger": false,
+      "assertions": [
+        "The output contains the source code of calculator.py",
+        "calculator.py was not modified",
+        "No tests were run"
+      ]
+    }
+  ]
+}

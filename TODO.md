@@ -15,9 +15,11 @@ Notes from a repo audit on `main`. Items are grouped by area and ranked within e
   - Assert on outputs: `benchmark.json`, per-task `grading.json`, `cleanup.json` exist; `skill-eval report` exits 0 and prints a row per (agent, with_skill).
   - Right now CI catches broken grader/harness/git-state/cleanup logic but not broken wiring (typer option parsing, `run` → `EvalRunner` flow, `eval-*`/`with_skill`/`without_skill` naming, progress bar, `--cleanup` flag, `init`). The README's "Quick Start" is not exercised by any test.
 
-- [ ] **Add a second, offline example skill + improve `init` template** *(medium)*
-  - Ship `skills/format-json/SKILL.md` (runs `python -m json.tool` on `.json` files; no `gh`, no network, no `git push`).
-  - Ship `examples/format-json/evals/evals.json` with 3–4 cases (file created, content contains, valid JSON, negative control).
+- [x] **Add a second, offline example skill + improve `init` template** *(medium)*
+  - Shipped `skills/fix-failing-tests/SKILL.md` — agent runs tests, diagnoses 3 subtle bugs (off-by-one, wrong denominator, missing case normalization), fixes source code, verifies all pass.
+  - Shipped `examples/fix-failing-tests/evals/evals.json` with 4 cases (explicit-invoke, implicit-invoke, contextual-invoke, negative-control).
+  - Buggy source: `examples/fix-failing-tests/evals/files/calculator.py` (3 bugs → 8 test failures). Tests: `test_calculator.py` (15 assertions).
+  - Tests highest-signal agent capability: error recovery / iterative refinement (Reflexion, SWE-bench).
   - Improve `cli.init` to scaffold: a SKILL.md frontmatter template, a `negative-control` example by default, a `should_trigger: false` + inverted-assertion template.
   - Add a `skill-eval list` subcommand that surfaces all `examples/*/evals/evals.json` as discoverable test cases.
   - The repo's value is "evaluate your skill"; one network-heavy example (`commit-push-pr`) is a poor "hello world" and blocks offline use.
@@ -81,7 +83,7 @@ Notes from a repo audit on `main`. Items are grouped by area and ranked within e
 
 ## Examples & skills
 
-- [ ] Add a second example skill (see Top #3) so the framework is demonstrable offline.
+- [x] Add a second example skill (see Top #3) so the framework is demonstrable offline.
 - [ ] Expand `examples/commit-push-pr/evals/files/sample_change.py` (currently 2 lines) into a more realistic fixture (e.g. a function with a bug, a TODO) so the "look at the file" branch of the skill is actually exercised.
 - [ ] Add an example showing how to **interpret** the `report` command's `with_skill` vs `without_skill` delta across agents. None of the current examples is a multi-agent comparison.
 - [ ] Enforce SKILL.md frontmatter at install time. Currently `test_skill_validation.py` is the only enforcement and it lives in `tests/`, not in the install path. A user running `skill-eval run` will not see a missing `description` until something silently misbehaves.
