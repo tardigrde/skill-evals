@@ -151,6 +151,16 @@ def _fetch_pr_for_branch(branch: str, source_repo: str) -> Optional[dict]:
         return None
 
 
+def _normalize_assertion_text(text: str) -> str:
+    """Normalize assertion text for matching LLM grader responses.
+
+    LLMs often echo assertions with minor drift (casing, trailing periods,
+    collapsed whitespace); without normalization those would be falsely
+    treated as missing results and skipped.
+    """
+    return " ".join(text.lower().split()).rstrip(".")
+
+
 def _load_state(path: Path) -> Optional[GitStateSnapshot]:
     if not path.exists():
         return None
@@ -739,8 +749,8 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
                         method="llm",
                     )
                 )
-                returned_texts.add(r["text"])
-            missing = [a for a in assertions if a not in returned_texts]
+                returned_texts.add(_normalize_assertion_text(r["text"]))
+            missing = [a for a in assertions if _normalize_assertion_text(a) not in returned_texts]
             if missing:
                 # The grader dropping an assertion is a grader failure, not an
                 # agent failure: skip it so it doesn't drag down the pass rate.
