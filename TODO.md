@@ -1,9 +1,22 @@
 # TODO
 
-Audit of `main` originally done at 0.1.0; pruned and updated 2026-06-11 (v0.3.0, PR #9 era).
+Audit of `main` originally done at 0.1.0; pruned and updated 2026-06-11 (v0.4.0, post PR #9/#10).
 Done items are kept briefly for history; anything obsolete or low-value was deleted.
 
+## How to work this list (for the implementing agent)
+
+- Do NOT bundle everything into one PR. Group into separate PRs by section (one for Bugs, one for Docs, one per Feature) with conventional-commit messages — semantic-release on main derives versions and the changelog from them.
+- `make test` (includes free e2e tier) + `make lint` must pass per PR; run `make test-live` once before the final merge of the batch (costs cents, needs `.env` OpenRouter key + opencode/codex auth).
+- Items marked *(judgment)* are optional — skip unless already touching that code.
+
+## Features (next up)
+
+- [ ] **Subagent evals** — evaluate custom subagent definitions (e.g. `~/.claude/agents/*.md`) the same way as skills: generalize `SkillInstaller` to an artifact installer with a type field; harnesses/runner/graders/metrics stay as-is. Add one example subagent + eval suite. README already announces it as coming soon.
+
 ## Done
+
+- [x] **Names converged on `agent-skill-eval`** (PR #10): repo, CLI, module, PyPI all match; `ase` short alias; env prefix `ASE_*`. Repo renames redirect from `skill-evals`/`agent-evals`.
+- [x] **Release fully automated** (gcpath pattern): push to main → python-semantic-release bumps version, tags, GitHub release, publishes to PyPI via trusted publishing. v0.4.0 shipped this way end-to-end. Trusted publisher re-created for renamed repo (workflow `release.yml`, env `pypi`); old one deleted.
 
 - [x] **Grader fixed + tested** — `deepseek/deepseek-v4-flash` via OpenRouter, `tests/test_llm_grader.py` covers prompt shape, JSON parsing, malformed responses, missing key.
 - [x] **Fake harness + CI smoke test** — `--agent fake`, no network, wired into CI.
@@ -26,6 +39,7 @@ Done items are kept briefly for history; anything obsolete or low-value was dele
 - [ ] `DeterministicGrader._resolve_workspace` relies on `with_skill`/`without_skill` substrings; silently falls back to `output_dir.parent`. Pass workspace explicitly or warn.
 - [ ] No user-facing schema of supported deterministic assertion patterns; unknown shapes fall through to LLM silently.
 - [ ] claude-code's `cost_usd` is the CLI's Anthropic-list-price estimate; actual OpenRouter billing differs. Document or reconcile via OpenRouter generation API.
+- [ ] semantic-release regenerated CHANGELOG.md from raw git history: curated 0.1–0.3 entries were replaced and commit trailers (Co-Authored-By) leak in. Configure the PSR changelog template (exclude trailers, keep insertion-only mode) and restore the curated pre-0.4 entries from git (`git show v0.4.0~1:CHANGELOG.md`).
 
 ## Test coverage gaps
 
@@ -45,9 +59,10 @@ Done items are kept briefly for history; anything obsolete or low-value was dele
 - [ ] `init` scaffold: SKILL.md frontmatter template + negative-control example by default.
 - [ ] Multi-agent comparison example showing how to read with/without-skill deltas.
 - [ ] Expand `examples/commit-push-pr/evals/files/sample_change.py` into a realistic fixture.
-- [ ] Split `graders/__init__.py`, `cli.py`, `runner.py` once they next need surgery — one-time split makes everything after cheaper.
+- [ ] *(judgment)* Split `graders/__init__.py`, `cli.py`, `runner.py` once they next need surgery — one-time split makes everything after cheaper.
 
 ## Cleanup
 
 - [ ] Delete stale local branches (`feat/improve-commit-push-pr-skill`, `fix/login-bug`, `smoke-test-ci`, merged feature branches) after confirming merged.
-- [ ] `SkillInstaller.uninstall` never called by the runner (safe today via `rmtree`, but asymmetric).
+- [ ] Delete `HANDOFF.md` (untracked, stale — its mission completed 2026-06-11) and the leftover `.claude/worktrees/` copy of the old module tree.
+- [ ] *(judgment)* `SkillInstaller.uninstall` never called by the runner (safe today via `rmtree`, but asymmetric).
