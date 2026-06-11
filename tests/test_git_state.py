@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
-from skill_eval.models import GitStateSnapshot
+from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
+from agent_skill_eval.models import GitStateSnapshot
 
 from .conftest import _init_git_workspace
 
@@ -147,7 +147,7 @@ class TestGitHubRepoSlug:
                 return "origin git@github.com:owner/repo.git (fetch)\n"
             return ""
 
-        monkeypatch.setattr("skill_eval.git_state._run", fake_run)
+        monkeypatch.setattr("agent_skill_eval.git_state._run", fake_run)
 
         capture_git_state(tmp_path, source_repo="git@github.com:owner/repo.git")
 

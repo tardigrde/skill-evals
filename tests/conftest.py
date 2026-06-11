@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from skill_eval.graders import DeterministicGrader
+from agent_skill_eval.graders import DeterministicGrader
 
 
 def _init_git_workspace(path: Path) -> None:

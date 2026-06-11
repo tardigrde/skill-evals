@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-06-11
+
+### Changed
+- Converged all names on `agent-skill-eval`: GitHub repo (was `skill-evals`), CLI entry point (was `skill-eval`), and Python module (was `skill_eval`) now all match the PyPI package name
+- Added short CLI alias `ase` (same app as `agent-skill-eval`)
+- Env var prefix renamed `SKILL_EVAL_*` -> `ASE_*` (`ASE_AGENT_TIMEOUT`, `ASE_AGENT_RETRIES`, `ASE_LIVE`)
+
+### Added
+- Codex harness fixes (`--sandbox workspace-write`, `--skip-git-repo-check`), `cost_usd` in `timing.json`, two-tier e2e tests, Makefile eval/test targets (merged via PR #9, previously unreleased)
+
 ## [0.3.0] - 2026-06-11
 
 ### Added
@@ -20,9 +30,9 @@ All notable changes to this project will be documented in this file.
 - `--runs N` repeats every (eval, agent, config); `benchmark.json` now reports `full_pass_rate`, `pass_at_k`, and `k`
 - `--agent-model agent=model` (repeatable) and `--harness-base-url` to pin models and endpoints per agent CLI
 - `--timeout` / `--retries` flags; harnesses retry on timeout or non-zero exit with backoff and record `exit_code`, `timed_out`, `retries` in `timing.json`
-- `skill-eval validate`: schema + fixture-existence + duplicate-id checks for evals.json
-- `skill-eval list`: discover eval suites and skills under a directory
-- `skill-eval compare`: side-by-side pass rates of two iterations
+- `agent-skill-eval validate`: schema + fixture-existence + duplicate-id checks for evals.json
+- `agent-skill-eval list`: discover eval suites and skills under a directory
+- `agent-skill-eval compare`: side-by-side pass rates of two iterations
 - `report --format markdown` and `report --show-evidence` (failed/skipped assertion evidence)
 - JSON Schema for the eval suite format at `schemas/evals.schema.json` (with a sync test)
 - SKILL.md frontmatter validation warning on `run` (missing name/description, name mismatch)
@@ -87,7 +97,7 @@ All notable changes to this project will be documented in this file.
 - OpenRouter grader support via `OPENROUTER_API_KEY`
 - Workspace isolation with fresh git repos per eval run
 - Token/timing extraction from each agent's native output format
-- `python -m skill_eval` entry point
+- `python -m agent_skill_eval` entry point
 
 ### Fixed
 - OpenRouter grader model resolution and opencode parser output handling

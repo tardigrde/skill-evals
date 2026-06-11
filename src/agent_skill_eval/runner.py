@@ -12,10 +12,10 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from skill_eval.git_state import capture_git_state, github_repo_slug
-from skill_eval.graders import LLMGrader, grade_assertions
-from skill_eval.harnesses import get_harness
-from skill_eval.models import (
+from agent_skill_eval.git_state import capture_git_state, github_repo_slug
+from agent_skill_eval.graders import LLMGrader, grade_assertions
+from agent_skill_eval.harnesses import get_harness
+from agent_skill_eval.models import (
     AgentType,
     BenchmarkResult,
     BenchmarkStats,
@@ -26,8 +26,8 @@ from skill_eval.models import (
     RunMeta,
     StatsPair,
 )
-from skill_eval.skills import SkillInstaller
-from skill_eval.workspace import WorkspaceManager
+from agent_skill_eval.skills import SkillInstaller
+from agent_skill_eval.workspace import WorkspaceManager
 
 console = Console()
 
@@ -279,7 +279,7 @@ class EvalRunner:
 
         cleanup_entry = self._build_cleanup_entry(pre_state, post_state)
 
-        if os.environ.get("SKILL_EVAL_KEEP_WORKSPACE"):
+        if os.environ.get("ASE_KEEP_WORKSPACE"):
             console.print(f"  [dim]Workspace kept: {workspace}[/dim]")
         else:
             self.workspace_mgr.cleanup(workspace)

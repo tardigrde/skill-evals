@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from skill_eval.models import AgentType
+from agent_skill_eval.models import AgentType
 
 SKILL_PATHS = {
     AgentType.OPENCODE: [".opencode/skills"],

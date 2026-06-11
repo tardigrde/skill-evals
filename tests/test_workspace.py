@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from skill_eval.workspace import WorkspaceManager
+from agent_skill_eval.workspace import WorkspaceManager
 
 
 @pytest.fixture
@@ -105,7 +105,7 @@ class TestCloneRepo:
             text=True,
             check=True,
         )
-        assert email_res.stdout.strip() == "eval@skill-eval.local"
+        assert email_res.stdout.strip() == "eval@agent-skill-eval.local"
 
         name_res = subprocess.run(
             ["git", "config", "user.name"],

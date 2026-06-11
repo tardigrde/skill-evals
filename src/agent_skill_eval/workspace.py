@@ -17,7 +17,7 @@ class WorkspaceManager:
         self.workspaces: list[Path] = []
 
     def create_workspace(self, name: str, fixture_files: dict[str, Path] | None = None) -> Path:
-        workspace = self.base_dir / f"skill-eval-{name}"
+        workspace = self.base_dir / f"agent-skill-eval-{name}"
         if workspace.exists():
             shutil.rmtree(workspace)
 
@@ -46,7 +46,7 @@ class WorkspaceManager:
             check=True,
         )
         subprocess.run(
-            ["git", "config", "user.email", "eval@skill-eval.local"],
+            ["git", "config", "user.email", "eval@agent-skill-eval.local"],
             cwd=workspace,
             capture_output=True,
             check=True,
@@ -66,7 +66,7 @@ class WorkspaceManager:
             check=True,
         )
         subprocess.run(
-            ["git", "config", "user.email", "eval@skill-eval.local"],
+            ["git", "config", "user.email", "eval@agent-skill-eval.local"],
             cwd=workspace,
             capture_output=True,
             check=True,

@@ -37,7 +37,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pytest -v --junitxml=results.xml --cov=skill_eval --cov-report=xml:coverage.xml
+      - run: pytest -v --junitxml=results.xml --cov=agent_skill_eval --cov-report=xml:coverage.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

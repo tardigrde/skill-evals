@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
+from agent_skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
 
 
 class TestOpenCodeHarnessParseOutput:

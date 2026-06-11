@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from skill_eval.models import EvalCase
+from agent_skill_eval.models import EvalCase
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
 REQUIRED_FIELDS = {"name", "description", "license", "compatibility"}

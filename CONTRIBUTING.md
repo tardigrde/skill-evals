@@ -3,8 +3,8 @@
 ## Setup
 
 ```bash
-git clone https://github.com/tardigrde/skill-evals.git
-cd skill-evals
+git clone https://github.com/tardigrde/agent-skill-eval.git
+cd agent-skill-eval
 uv venv
 uv pip install -e ".[dev]"
 ```

@@ -4,14 +4,14 @@ import json
 import subprocess
 from pathlib import Path
 
-from skill_eval.graders import DeterministicGrader
-from skill_eval.models import GitStateSnapshot
+from agent_skill_eval.graders import DeterministicGrader
+from agent_skill_eval.models import GitStateSnapshot
 
 from .conftest import _init_git_workspace
 
 
 def _snapshot(ws: Path) -> GitStateSnapshot:
-    from skill_eval.git_state import capture_git_state
+    from agent_skill_eval.git_state import capture_git_state
 
     return capture_git_state(ws)
 
@@ -215,7 +215,7 @@ class TestCheckGitBranch:
         )
         post = _snapshot(git_workspace)
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post)
         # Sanity: no new branch was actually created
@@ -236,7 +236,7 @@ class TestCheckGitCommit:
         subprocess.run(["git", "commit", "-m", "agent work"], cwd=git_workspace, capture_output=True, check=True)
         post = _snapshot(git_workspace)
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post)
         grader_with_state = DeterministicGrader(pre_state=pre, post_state=post)
@@ -355,7 +355,7 @@ class TestCheckGitCommit:
         )
         post = _snapshot(git_workspace)
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post)
         # Sanity: HEAD moved but no new commits
@@ -425,7 +425,7 @@ class TestCheckPushed:
         post_state.remote_branches = list(post_state.remote_branches) + ["feature/x"]
         post_state.remote_branch_heads = {**post_state.remote_branch_heads, "feature/x": head_sha}
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post_state)
         assert diff["eval_branch"] == "feature/x"
@@ -455,7 +455,7 @@ class TestCheckPushed:
         subprocess.run(["git", "commit", "-m", "x work"], cwd=git_workspace, capture_output=True, check=True)
         post_state = _snapshot(git_workspace)
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post_state)
         assert diff["eval_branch"] == "feature/x"
@@ -491,7 +491,7 @@ class TestCheckPushed:
             "unrelated-branch": "0" * 40,
         }
 
-        from skill_eval.git_state import state_diff
+        from agent_skill_eval.git_state import state_diff
 
         diff = state_diff(pre, post_state)
         # Sanity: a new remote branch appeared but it isn't the eval branch
@@ -853,7 +853,7 @@ class TestCheckPrCreated:
         meta_path.write_text(json.dumps({"source_repo": "https://github.com/owner/repo"}))
 
         monkeypatch.setattr(
-            "skill_eval.graders._fetch_pr_for_branch",
+            "agent_skill_eval.graders._fetch_pr_for_branch",
             lambda branch, repo: (
                 {
                     "number": 99,
@@ -899,7 +899,7 @@ class TestCheckPrCreated:
         meta_path.write_text(json.dumps({"source_repo": "https://github.com/owner/repo"}))
 
         monkeypatch.setattr(
-            "skill_eval.graders._fetch_pr_for_branch",
+            "agent_skill_eval.graders._fetch_pr_for_branch",
             lambda branch, repo: (
                 {
                     "number": 99,

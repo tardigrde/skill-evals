@@ -5,7 +5,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from skill_eval.cli import app
+from agent_skill_eval.cli import app
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

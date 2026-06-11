@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-skill-eval"
-version = "0.3.0"
+version = "0.4.0"
 description = "Framework for evaluating agent skills across OpenCode, Claude Code, and Codex"
 requires-python = ">=3.11"
 license = "MIT"
 readme = "README.md"
 authors = [
-    { name = "skill-eval contributors" },
+    { name = "agent-skill-eval contributors" },
 ]
 keywords = ["agent", "evaluation", "skills", "benchmark", "llm"]
 classifiers = [
@@ -33,8 +33,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tardigrde/skill-evals"
-Repository = "https://github.com/tardigrde/skill-evals"
+Homepage = "https://github.com/tardigrde/agent-skill-eval"
+Repository = "https://github.com/tardigrde/agent-skill-eval"
 
 [project.optional-dependencies]
 dev = [
@@ -44,15 +44,16 @@ dev = [
 ]
 
 [project.scripts]
-skill-eval = "skill_eval.cli:app"
+agent-skill-eval = "agent_skill_eval.cli:app"
+ase = "agent_skill_eval.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/skill_eval"]
+packages = ["src/agent_skill_eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "live: e2e tests that call real agent CLIs and paid APIs (needs SKILL_EVAL_LIVE=1)",
+    "live: e2e tests that call real agent CLIs and paid APIs (needs ASE_LIVE=1)",
 ]
 addopts = "-m 'not live'"
 
@@ -62,3 +63,21 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+
+[tool.semantic_release]
+major_on_zero = false
+allow_zero_version = true
+version_toml = ["pyproject.toml:project.version"]
+version_variables = ["src/agent_skill_eval/__init__.py:__version__"]
+branch = "main"
+upload_to_pypi = false
+upload_to_release = true
+build_command = "uv build"
+commit_message = "chore(release): {version}"
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false

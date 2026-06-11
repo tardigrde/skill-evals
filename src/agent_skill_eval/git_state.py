@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from skill_eval.models import GitStateSnapshot
+from agent_skill_eval.models import GitStateSnapshot
 
 
 def _run(args: list[str], cwd: Path) -> str:

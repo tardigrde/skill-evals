@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from skill_eval.models import AgentType
-from skill_eval.skills import SkillInstaller
+from agent_skill_eval.models import AgentType
+from agent_skill_eval.skills import SkillInstaller
 
 
 @pytest.fixture

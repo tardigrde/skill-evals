@@ -1,8 +1,8 @@
-# skill-eval
+# agent-skill-eval
 
 **Evaluate agent skills through the real coding harnesses you use every day — Claude Code, Codex, and OpenCode — not the raw API.**
 
-You wrote a `SKILL.md`. Does it actually make your agent better? skill-eval answers that with data: it installs your skill into a fresh workspace, runs the *actual agent CLI* against your test prompts (with and without the skill), grades the results with deterministic state-diff checks plus an LLM rubric, and reports the measured impact — pass rates, pass@k across repeated runs, token costs, and wall-clock time.
+You wrote a `SKILL.md`. Does it actually make your agent better? agent-skill-eval answers that with data: it installs your skill into a fresh workspace, runs the *actual agent CLI* against your test prompts (with and without the skill), grades the results with deterministic state-diff checks plus an LLM rubric, and reports the measured impact — pass rates, pass@k across repeated runs, token costs, and wall-clock time.
 
 Because the eval goes through the full harness — system prompt, skill discovery, permissions, tool use — you get exactly the behavior you'll see in daily use, including the failure mode that matters most: *the agent never triggering your skill at all*.
 
@@ -16,20 +16,24 @@ Because the eval goes through the full harness — system prompt, skill discover
 - **Honest grading**: assertions the grader can't check are *skipped*, not failed; a missing API key warns upfront instead of silently zeroing your pass rate
 - **Pinned models**: `--agent-model claude-code=haiku --agent-model codex=gpt-5-mini` makes runs reproducible across machines
 - **Scoped cleanup**: only removes artifacts recorded in `cleanup.json`; never closes unrelated PRs or deletes unrelated branches
-- **Re-grading**: `skill-eval grade` re-grades saved outputs without re-running agents
-- **Markdown reports**: paste `skill-eval report --format markdown` straight into a PR or blog post
+- **Re-grading**: `agent-skill-eval grade` re-grades saved outputs without re-running agents
+- **Markdown reports**: paste `agent-skill-eval report --format markdown` straight into a PR or blog post
 
 ## Installation
 
 ```bash
-pip install skill-eval
+pip install agent-skill-eval
 ```
+
+This installs two identical commands: `agent-skill-eval` and the short alias `ase`.
+
+> **Coming soon:** subagent evals — evaluate custom subagent definitions the same way as skills, across the same harnesses.
 
 Or from source with `uv`:
 
 ```bash
-git clone https://github.com/tardigrde/skill-evals
-cd skill-evals
+git clone https://github.com/tardigrde/agent-skill-eval
+cd agent-skill-eval
 uv venv && uv pip install -e ".[dev]"
 ```
 
@@ -39,13 +43,13 @@ You also need the agent CLIs you want to evaluate (`claude`, `codex`, `opencode`
 
 ```bash
 # 1. See what's available
-skill-eval list
+agent-skill-eval list
 
 # 2. Validate an eval suite
-skill-eval validate examples/write-release-notes/evals/evals.json
+agent-skill-eval validate examples/write-release-notes/evals/evals.json
 
 # 3. Run it (pin cheap models while iterating)
-skill-eval run \
+agent-skill-eval run \
   --skill ./skills/write-release-notes \
   --evals ./examples/write-release-notes/evals/evals.json \
   --agent claude-code --agent-model claude-code=haiku \
@@ -53,13 +57,13 @@ skill-eval run \
   --runs 3
 
 # 4. Read the results
-skill-eval report --workspace ./eval-workspace/write-release-notes-workspace --show-evidence
+agent-skill-eval report --workspace ./eval-workspace/write-release-notes-workspace --show-evidence
 ```
 
 To start a suite for your own skill:
 
 ```bash
-skill-eval init my-skill
+agent-skill-eval init my-skill
 ```
 
 This scaffolds `my-skill/SKILL.md` (frontmatter template), `my-skill/evals/evals.json` (one positive case and one negative control), and `my-skill/evals/files/` for fixtures.
@@ -98,7 +102,7 @@ This scaffolds `my-skill/SKILL.md` (frontmatter template), `my-skill/evals/evals
 }
 ```
 
-A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/evals.schema.json) — point your editor at it for autocompletion, and run `skill-eval validate <file>` in CI.
+A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/evals.schema.json) — point your editor at it for autocompletion, and run `agent-skill-eval validate <file>` in CI.
 
 ### Eval fields
 
@@ -143,7 +147,7 @@ Anything else falls through to the LLM rubric. With `should_trigger: false`, the
 ### `run`
 
 ```bash
-skill-eval run \
+agent-skill-eval run \
   --skill <skill-dir> --evals <evals.json> \
   --agent opencode --agent claude-code --agent codex \
   [--agent-model claude-code=haiku] [--agent-model codex=gpt-5-mini] \
@@ -161,12 +165,12 @@ Key options:
 - `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable.
 - `--harness-base-url`: injected as `ANTHROPIC_BASE_URL` (claude-code) / `OPENAI_BASE_URL` (codex, opencode) into the agent process.
 - `--runs, -n`: repeat each (eval, agent, config) N times; enables pass@k stats. Results land in `run-1/`, `run-2/`, ... subdirectories.
-- `--timeout` / `--retries`: per-run agent timeout (default 600s) and retries on timeout or non-zero exit (default 1). Also settable via `SKILL_EVAL_AGENT_TIMEOUT` / `SKILL_EVAL_AGENT_RETRIES`.
+- `--timeout` / `--retries`: per-run agent timeout (default 600s) and retries on timeout or non-zero exit (default 1). Also settable via `ASE_AGENT_TIMEOUT` / `ASE_AGENT_RETRIES`.
 
 ### `report`
 
 ```bash
-skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|markdown] [--show-evidence]
+agent-skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|markdown] [--show-evidence]
 ```
 
 `--show-evidence` prints the evidence string for every failed or skipped assertion — the state diff for deterministic checks, the judge's reasoning for LLM checks. `--format markdown` emits a paste-ready table.
@@ -174,7 +178,7 @@ skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|
 ### `compare`
 
 ```bash
-skill-eval compare --workspace <skill-workspace> 1 2
+agent-skill-eval compare --workspace <skill-workspace> 1 2
 ```
 
 Side-by-side pass rates of two iterations, per configuration, with the change — the feedback loop for iterating on a SKILL.md.
@@ -182,7 +186,7 @@ Side-by-side pass rates of two iterations, per configuration, with the change �
 ### `validate`
 
 ```bash
-skill-eval validate path/to/evals.json
+agent-skill-eval validate path/to/evals.json
 ```
 
 Schema check plus referenced-fixture existence and duplicate-id detection. Exit code 1 on any problem (CI-friendly).
@@ -190,7 +194,7 @@ Schema check plus referenced-fixture existence and duplicate-id detection. Exit 
 ### `list`
 
 ```bash
-skill-eval list [--root .]
+agent-skill-eval list [--root .]
 ```
 
 Discovers eval suites (`evals.json`) and skills (`SKILL.md`) under a directory.
@@ -198,7 +202,7 @@ Discovers eval suites (`evals.json`) and skills (`SKILL.md`) under a directory.
 ### `grade`
 
 ```bash
-skill-eval grade --workspace <iteration-dir> [--recompute-benchmark]
+agent-skill-eval grade --workspace <iteration-dir> [--recompute-benchmark]
 ```
 
 Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Two caveats: LLM-graded assertions are re-evaluated from scratch and may flip verdicts, and because the original agent workspace is deleted after the run, the judge re-grades from the saved artifacts (agent output, logs) rather than the live workspace files.
@@ -206,7 +210,7 @@ Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Tw
 ### `cleanup`
 
 ```bash
-skill-eval cleanup --workspace ./eval-workspace [--yes]
+agent-skill-eval cleanup --workspace ./eval-workspace [--yes]
 ```
 
 Only closes PRs and deletes remote branches recorded in `cleanup.json`. Never touches unrelated PRs, branches, or workspaces.
@@ -214,7 +218,7 @@ Only closes PRs and deletes remote branches recorded in `cleanup.json`. Never to
 ### `init`
 
 ```bash
-skill-eval init my-skill [--output ./examples]
+agent-skill-eval init my-skill [--output ./examples]
 ```
 
 ## Example skills
@@ -270,18 +274,18 @@ eval-workspace/
 }
 ```
 
-To debug a failure: find `"passed": false` entries, read `evidence`, compare `pre_state.json`/`post_state.json`, then check `outputs/output.txt` for the agent's full response. Or just run `skill-eval report --show-evidence`.
+To debug a failure: find `"passed": false` entries, read `evidence`, compare `pre_state.json`/`post_state.json`, then check `outputs/output.txt` for the agent's full response. Or just run `agent-skill-eval report --show-evidence`.
 
 ### Iterating on a skill
 
-1. `skill-eval run ...` → 2. `skill-eval report --show-evidence` → 3. edit SKILL.md → 4. `skill-eval run --iteration 2 ...` → 5. `skill-eval compare --workspace ... 1 2`
+1. `agent-skill-eval run ...` → 2. `agent-skill-eval report --show-evidence` → 3. edit SKILL.md → 4. `agent-skill-eval run --iteration 2 ...` → 5. `agent-skill-eval compare --workspace ... 1 2`
 
 ## Environment variables
 
 - `OPENROUTER_API_KEY` / `OPENAI_API_KEY`: API key for LLM rubric grading
 - `OPENAI_BASE_URL`: custom grader endpoint (defaults to OpenRouter)
-- `SKILL_EVAL_AGENT_TIMEOUT` / `SKILL_EVAL_AGENT_RETRIES`: harness timeout/retry defaults
-- `SKILL_EVAL_KEEP_WORKSPACE`: keep per-eval workspaces for debugging
+- `ASE_AGENT_TIMEOUT` / `ASE_AGENT_RETRIES`: harness timeout/retry defaults
+- `ASE_KEEP_WORKSPACE`: keep per-eval workspaces for debugging
 
 ## Agent-specific details
 

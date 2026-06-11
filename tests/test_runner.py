@@ -5,8 +5,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from skill_eval.models import AgentType, EvalCase
-from skill_eval.runner import EvalRunner
+from agent_skill_eval.models import AgentType, EvalCase
+from agent_skill_eval.runner import EvalRunner
 
 
 class TestPromptConstruction:
@@ -29,7 +29,7 @@ class TestPromptConstruction:
                 captured_prompts.append(prompt)
                 return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
 
-        with patch("skill_eval.runner.get_harness", side_effect=FakeHarness):
+        with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
                 skill_path=skill_path,
                 evals_path=evals_path,
@@ -65,7 +65,7 @@ class TestPromptConstruction:
                 captured_prompts.append(prompt)
                 return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
 
-        with patch("skill_eval.runner.get_harness", side_effect=FakeHarness):
+        with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
                 skill_path=skill_path,
                 evals_path=evals_path,
@@ -106,7 +106,7 @@ class TestPromptConstruction:
                 captured_prompts.append(prompt)
                 return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
 
-        with patch("skill_eval.runner.get_harness", side_effect=FakeHarness):
+        with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
                 skill_path=skill_path,
                 evals_path=evals_path,
@@ -172,7 +172,7 @@ class TestStateCapture:
                     "",
                 )
 
-        with patch("skill_eval.runner.get_harness", side_effect=FakeHarness):
+        with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
                 skill_path=skill_path,
                 evals_path=evals_path,
@@ -196,8 +196,8 @@ class TestStateCapture:
 
 class TestCleanupScope:
     def test_cleanup_only_targets_manifest_entries(self, tmp_path):
-        from skill_eval.cli import _cleanup_manifest
-        from skill_eval.models import CleanupManifest
+        from agent_skill_eval.cli import _cleanup_manifest
+        from agent_skill_eval.models import CleanupManifest
 
         calls: list[list[str]] = []
 
@@ -224,8 +224,8 @@ class TestCleanupScope:
         assert not any("pr" in c and "list" in c and "open" in c for c in calls)
 
     def test_cleanup_manifest_without_source_repo_is_safe(self, tmp_path):
-        from skill_eval.cli import _cleanup_manifest
-        from skill_eval.models import CleanupManifest
+        from agent_skill_eval.cli import _cleanup_manifest
+        from agent_skill_eval.models import CleanupManifest
 
         calls: list[list[str]] = []
 
@@ -240,8 +240,8 @@ class TestCleanupScope:
     def test_cleanup_uses_remote_branch_delta_not_local(self, tmp_path):
         """A branch in local delta that ALSO existed in pre remote branches
         must NOT appear in the cleanup manifest."""
-        from skill_eval.git_state import GitStateSnapshot
-        from skill_eval.runner import EvalRunner
+        from agent_skill_eval.git_state import GitStateSnapshot
+        from agent_skill_eval.runner import EvalRunner
 
         skill_path = tmp_path / "skill"
         skill_path.mkdir()
@@ -289,7 +289,7 @@ class TestCleanupScope:
 
 class TestGradeCommand:
     def test_grade_persists_updated_grading(self, tmp_path, evals_path):
-        from skill_eval.cli import grade
+        from agent_skill_eval.cli import grade
 
         skill_path = tmp_path / "skill"
         skill_path.mkdir()
@@ -368,7 +368,7 @@ class TestGradeCommand:
         }
         (iter_dir / "evals_meta.json").write_text(json.dumps(meta))
 
-        with patch("skill_eval.cli.LLMGrader") as MockLLM:
+        with patch("agent_skill_eval.cli.LLMGrader") as MockLLM:
             MockLLM.side_effect = Exception("no key")
             grade(workspace=iter_dir, grader_model="x")
 
@@ -377,7 +377,7 @@ class TestGradeCommand:
         assert grading["summary"]["passed"] >= 1
 
     def test_grade_uses_should_trigger_for_inversion(self, tmp_path, evals_path):
-        from skill_eval.cli import grade
+        from agent_skill_eval.cli import grade
 
         skill_path = tmp_path / "skill"
         skill_path.mkdir()
@@ -437,7 +437,7 @@ class TestGradeCommand:
         }
         (iter_dir / "evals_meta.json").write_text(json.dumps(meta))
 
-        with patch("skill_eval.cli.LLMGrader") as MockLLM:
+        with patch("agent_skill_eval.cli.LLMGrader") as MockLLM:
             MockLLM.side_effect = Exception("no key")
             grade(workspace=iter_dir, grader_model="x")
 
@@ -449,7 +449,7 @@ class TestGradeCommand:
         """`grade --recompute-benchmark` should recover the real agent name from
         ``run_meta.json`` and produce benchmark.run_summary keyed by
         ``<agent>_with_skill`` / ``<agent>_without_skill``."""
-        from skill_eval.cli import grade
+        from agent_skill_eval.cli import grade
 
         iter_dir = tmp_path / "iter"
         iter_dir.mkdir()
@@ -523,7 +523,7 @@ class TestGradeCommand:
         }
         (iter_dir / "evals_meta.json").write_text(json.dumps(meta))
 
-        with patch("skill_eval.cli.LLMGrader") as MockLLM:
+        with patch("agent_skill_eval.cli.LLMGrader") as MockLLM:
             MockLLM.side_effect = Exception("no key")
             grade(workspace=iter_dir, grader_model="x", recompute_benchmark=True)
 
@@ -546,7 +546,7 @@ class TestEvalsMetaPersistence:
             "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
         )
 
-        with patch("skill_eval.runner.get_harness") as mock_harness:
+        with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
                 type(
@@ -585,7 +585,7 @@ class TestEvalsMetaPersistence:
 class TestRunMetaPersistence:
     def test_run_writes_run_meta_per_config(self, tmp_path, evals_path):
         """Each config directory should have a run_meta.json describing it."""
-        from skill_eval.runner import EvalRunner
+        from agent_skill_eval.runner import EvalRunner
 
         skill_path = tmp_path / "skill"
         skill_path.mkdir()
@@ -593,7 +593,7 @@ class TestRunMetaPersistence:
             "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
         )
 
-        with patch("skill_eval.runner.get_harness") as mock_harness:
+        with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
                 type(
@@ -638,7 +638,7 @@ class TestRunMetaPersistence:
 class TestAgentDirectoryLayout:
     def test_two_agents_produce_separate_output_dirs(self, tmp_path, evals_path):
         """Two agents running the same eval must produce separate config dirs."""
-        from skill_eval.runner import EvalRunner
+        from agent_skill_eval.runner import EvalRunner
 
         skill_path = tmp_path / "skill"
         skill_path.mkdir()
@@ -646,7 +646,7 @@ class TestAgentDirectoryLayout:
             "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
         )
 
-        with patch("skill_eval.runner.get_harness") as mock_harness:
+        with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
                 type(
@@ -685,9 +685,9 @@ class TestAgentDirectoryLayout:
 
 class TestCleanupWorkspaceScope:
     def test_cleanup_only_removes_manifest_workspaces(self, tmp_path):
-        """Sibling skill-eval-* workspaces not in the manifest must NOT be deleted."""
-        from skill_eval.cli import _cleanup_iteration
-        from skill_eval.models import CleanupManifest
+        """Sibling agent-skill-eval-* workspaces not in the manifest must NOT be deleted."""
+        from agent_skill_eval.cli import _cleanup_iteration
+        from agent_skill_eval.models import CleanupManifest
 
         iter_dir = tmp_path / "iter"
         iter_dir.mkdir()
@@ -695,12 +695,12 @@ class TestCleanupWorkspaceScope:
         workspace_base.mkdir()
 
         # A workspace recorded in the manifest
-        manifest_ws = workspace_base / "skill-eval-A"
+        manifest_ws = workspace_base / "agent-skill-eval-A"
         manifest_ws.mkdir()
         (manifest_ws / "file.txt").write_text("x")
 
         # A sibling workspace NOT in the manifest
-        sibling_ws = workspace_base / "skill-eval-other"
+        sibling_ws = workspace_base / "agent-skill-eval-other"
         sibling_ws.mkdir()
         (sibling_ws / "file.txt").write_text("x")
 
@@ -718,13 +718,13 @@ class TestCleanupWorkspaceScope:
     def test_cleanup_without_manifest_skips_workspace_deletion(self, tmp_path):
         """If cleanup.json is missing, _cleanup_iteration must NOT delete
         unrecorded workspaces under the workspace base."""
-        from skill_eval.cli import _cleanup_iteration
+        from agent_skill_eval.cli import _cleanup_iteration
 
         iter_dir = tmp_path / "iter"
         iter_dir.mkdir()
         workspace_base = tmp_path / "ws"
         workspace_base.mkdir()
-        sibling_ws = workspace_base / "skill-eval-other"
+        sibling_ws = workspace_base / "agent-skill-eval-other"
         sibling_ws.mkdir()
         (sibling_ws / "file.txt").write_text("x")
 
@@ -755,7 +755,7 @@ class TestExampleNegativeControl:
 
 class TestComputeBenchmark:
     def test_compute_benchmark_single_agent(self):
-        from skill_eval.runner import compute_benchmark
+        from agent_skill_eval.runner import compute_benchmark
 
         results = {
             "case1": {
@@ -777,7 +777,7 @@ class TestComputeBenchmark:
         assert res.delta.tokens == -100.0
 
     def test_compute_benchmark_multi_agent_per_agent_deltas(self):
-        from skill_eval.runner import compute_benchmark
+        from agent_skill_eval.runner import compute_benchmark
 
         results = {
             "case1": {

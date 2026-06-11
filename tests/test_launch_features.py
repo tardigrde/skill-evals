@@ -11,11 +11,11 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from skill_eval.cli import _parse_agent_models, app
-from skill_eval.graders import grade_assertions
-from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, OpenCodeHarness, get_harness
-from skill_eval.models import AgentType, EvalSuite
-from skill_eval.runner import compute_benchmark, compute_stats
+from agent_skill_eval.cli import _parse_agent_models, app
+from agent_skill_eval.graders import grade_assertions
+from agent_skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, OpenCodeHarness, get_harness
+from agent_skill_eval.models import AgentType, EvalSuite
+from agent_skill_eval.runner import compute_benchmark, compute_stats
 
 FIXTURES = Path(__file__).parent / "fixtures"
 REPO_ROOT = Path(__file__).parent.parent
@@ -120,7 +120,7 @@ class TestSkippedGrading:
         assert grading.summary.pass_rate == pytest.approx(1.0)
 
     def test_llm_error_marks_assertions_skipped(self, tmp_path, monkeypatch):
-        from skill_eval.graders import LLMGrader
+        from agent_skill_eval.graders import LLMGrader
 
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -180,8 +180,8 @@ class TestHarnessResilience:
             return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="boom")
 
         with (
-            patch("skill_eval.harnesses.subprocess.run", side_effect=fake_run),
-            patch("skill_eval.harnesses.time.sleep"),
+            patch("agent_skill_eval.harnesses.subprocess.run", side_effect=fake_run),
+            patch("agent_skill_eval.harnesses.time.sleep"),
         ):
             _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
 
@@ -197,7 +197,7 @@ class TestHarnessResilience:
         def fake_run(cmd, **kwargs):
             raise subprocess.TimeoutExpired(cmd, 1, output=b"partial", stderr=b"")
 
-        with patch("skill_eval.harnesses.subprocess.run", side_effect=fake_run):
+        with patch("agent_skill_eval.harnesses.subprocess.run", side_effect=fake_run):
             _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
 
         assert timing.timed_out is True
@@ -210,7 +210,7 @@ class TestHarnessResilience:
         def fake_run(cmd, **kwargs):
             return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
-        with patch("skill_eval.harnesses.subprocess.run", side_effect=fake_run) as mocked:
+        with patch("agent_skill_eval.harnesses.subprocess.run", side_effect=fake_run) as mocked:
             _, timing, _, _ = harness.run("prompt", tmp_path / "out")
 
         agent_calls = [c for c in mocked.call_args_list if c.args[0] and c.args[0][0] == "codex"]
@@ -337,7 +337,7 @@ class TestSchemaInSync:
         checked_in = json.loads(schema_path.read_text())
         generated = EvalSuite.model_json_schema()
         generated["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-        generated["title"] = "skill-eval eval suite"
+        generated["title"] = "agent-skill-eval eval suite"
         assert checked_in == generated, "Regenerate schemas/evals.schema.json from EvalSuite.model_json_schema()"
 
 
@@ -428,7 +428,7 @@ class TestAssertionRouting:
 
 class TestLLMGraderWorkspaceContext:
     def test_small_workspace_files_are_inlined_and_skill_dirs_excluded(self, tmp_path):
-        from skill_eval.graders import LLMGrader
+        from agent_skill_eval.graders import LLMGrader
 
         (tmp_path / "RELEASE_NOTES.md").write_text("# Release Notes\n\n## Features\n- thing")
         skill_dir = tmp_path / ".claude" / "skills" / "demo"
@@ -462,7 +462,7 @@ class TestRetryWorkspaceGuard:
         harness = self._ScriptHarness(git_workspace, max_retries=2)
         harness.script = "echo mutated > newfile.txt; exit 1"
 
-        with patch("skill_eval.harnesses.time.sleep"):
+        with patch("agent_skill_eval.harnesses.time.sleep"):
             _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
 
         assert timing.exit_code == 1
@@ -475,7 +475,7 @@ class TestRetryWorkspaceGuard:
         harness = self._ScriptHarness(git_workspace, max_retries=2)
         harness.script = "exit 1"
 
-        with patch("skill_eval.harnesses.time.sleep"):
+        with patch("agent_skill_eval.harnesses.time.sleep"):
             _, timing, _, stderr = harness.run("prompt", tmp_path / "out")
 
         assert timing.exit_code == 1
