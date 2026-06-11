@@ -346,11 +346,14 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
             pass_rate=StatsPair(mean=0.0, stddev=0.0),
             time_seconds=StatsPair(mean=0.0, stddev=0.0),
             tokens=StatsPair(mean=0.0, stddev=0.0),
+            cost_usd=StatsPair(mean=0.0, stddev=0.0),
         )
 
     pass_rates = [r["grading"]["summary"]["pass_rate"] for r in results]
     times = [r["timing"]["duration_ms"] / 1000.0 for r in results]
     tokens = [r["timing"]["total_tokens"] for r in results]
+    # .get: timing.json from runs before cost_usd existed lacks the field.
+    costs = [r["timing"].get("cost_usd", 0.0) or 0.0 for r in results]
 
     full_passes = [_is_full_pass(r) for r in results]
 
@@ -374,6 +377,10 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
         tokens=StatsPair(
             mean=statistics.mean(tokens) if tokens else 0.0,
             stddev=statistics.stdev(tokens) if len(tokens) > 1 else 0.0,
+        ),
+        cost_usd=StatsPair(
+            mean=statistics.mean(costs) if costs else 0.0,
+            stddev=statistics.stdev(costs) if len(costs) > 1 else 0.0,
         ),
         full_pass_rate=sum(full_passes) / len(full_passes),
         pass_at_k=pass_at_k,
@@ -415,6 +422,7 @@ def compute_benchmark(results: dict[str, dict], agents: list[AgentType], with_ba
                     pass_rate=with_stats.pass_rate.mean - without_stats.pass_rate.mean,
                     time_seconds=with_stats.time_seconds.mean - without_stats.time_seconds.mean,
                     tokens=with_stats.tokens.mean - without_stats.tokens.mean,
+                    cost_usd=with_stats.cost_usd.mean - without_stats.cost_usd.mean,
                 )
 
     delta = None

@@ -69,7 +69,6 @@ select = ["E", "F", "I"]
 major_on_zero = false
 allow_zero_version = true
 version_toml = ["pyproject.toml:project.version"]
-version_variables = ["src/agent_skill_eval/__init__.py:__version__"]
 branch = "main"
 upload_to_pypi = false
 upload_to_release = true
@@ -77,6 +76,15 @@ build_command = "uv build"
 commit_message = "chore(release): {version}"
 
 [tool.semantic_release.changelog]
+# Insertion-only updates: new releases are inserted at the flag, the curated
+# history below it is never regenerated. Templates in templates/ are the PSR
+# defaults minus full commit bodies (no Co-Authored-By trailers in the log).
+mode = "update"
+insertion_flag = "<!-- version list -->"
+template_dir = "templates"
+exclude_commit_patterns = ['''chore\(release\):.*''']
+
+[tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
 
 [tool.semantic_release.branches.main]

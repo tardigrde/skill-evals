@@ -45,7 +45,7 @@
       "files": ["files/calculator.py"],
       "should_trigger": false,
       "assertions": [
-        "The output contains the source code of calculator.py",
+        "The agent read calculator.py and displayed or described its contents",
         "calculator.py was not modified",
         "No tests were run"
       ]

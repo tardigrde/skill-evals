@@ -8,9 +8,96 @@ from pathlib import Path
 from typing import Optional
 
 from openai import OpenAI, OpenAIError
+from rich.console import Console
 
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
 from agent_skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+
+console = Console(stderr=True)
+
+
+def classify_assertion(assertion: str) -> str:
+    """Return the deterministic check an assertion text routes to, or ``"llm"``.
+
+    Mirrors the routing in ``DeterministicGrader._check_assertion`` exactly.
+    ``validate`` uses this to show suite authors which assertions will fall
+    through to the LLM rubric (nondeterministic, needs an API key) instead of
+    that happening silently at run time.
+    """
+    assertion_lower = assertion.lower()
+
+    if "branch" in assertion_lower and (
+        "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+    ):
+        return "git-branch"
+
+    if "commit" in assertion_lower and (
+        "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
+    ):
+        return "git-commit"
+
+    if "push" in assertion_lower and (
+        "remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower
+    ):
+        return "pushed"
+
+    # Word-boundary match: a bare "pr" substring would also match
+    # "prominently", "present", "approach", etc.
+    if re.search(r"\bprs?\b|\bpull request", assertion_lower):
+        return "pr-created"
+
+    if (
+        "file exists" in assertion_lower
+        or ("file" in assertion_lower and "exists" in assertion_lower)
+        or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"]))
+    ):
+        return "file-exists"
+
+    if "ran" in assertion_lower and (
+        "command" in assertion_lower or any(cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"])
+    ):
+        return "command-ran"
+
+    if "contains" in assertion_lower or "includes" in assertion_lower:
+        # Without a quoted/backticked pattern this is a prose assertion that
+        # happens to contain "contains"/"includes"; it goes to the LLM rubric.
+        if re.findall(r'"([^"]+)"', assertion) or re.findall(r"`([^`]+)`", assertion):
+            return "content-contains"
+        return "llm"
+
+    if "valid json" in assertion_lower:
+        return "valid-json"
+
+    return "llm"
+
+
+def _resolve_workspace_path(output_dir: Path, workspace: Path | None) -> Path:
+    """Resolve the agent workspace used for file-based checks.
+
+    Prefers the explicitly passed workspace. Falls back to guessing from the
+    output directory layout, which is unreliable (e.g. when re-grading after
+    the per-eval workspace was deleted) — so the fallback warns instead of
+    happening silently.
+    """
+    if workspace is not None and workspace.exists():
+        return workspace
+    if "with_skill" in str(output_dir) or "without_skill" in str(output_dir):
+        guess = output_dir.parent.parent
+    else:
+        guess = output_dir.parent
+    key = str(output_dir)
+    if key not in _warned_fallback_dirs:
+        _warned_fallback_dirs.add(key)
+        console.print(
+            f"[yellow]Warning: no live workspace for {output_dir}; file-based checks fall back to "
+            f"{guess} (saved artifacts only). Results may differ from the original run.[/yellow]"
+        )
+    return guess
+
+
+# Output dirs we already warned about, so the deterministic and LLM graders
+# don't each repeat the same workspace-fallback warning for one run.
+_warned_fallback_dirs: set[str] = set()
 
 
 def _is_open_pr_state(state: Optional[str]) -> bool:
@@ -62,6 +149,16 @@ def _fetch_pr_for_branch(branch: str, source_repo: str) -> Optional[dict]:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
+
+
+def _normalize_assertion_text(text: str) -> str:
+    """Normalize assertion text for matching LLM grader responses.
+
+    LLMs often echo assertions with minor drift (casing, trailing periods,
+    collapsed whitespace); without normalization those would be falsely
+    treated as missing results and skipped.
+    """
+    return " ".join(text.lower().split()).rstrip(".")
 
 
 def _load_state(path: Path) -> Optional[GitStateSnapshot]:
@@ -143,45 +240,23 @@ class DeterministicGrader:
         should_trigger: bool,
         diff: dict,
     ) -> AssertionResult:
-        assertion_lower = assertion.lower()
+        method = classify_assertion(assertion)
 
-        if "branch" in assertion_lower and (
-            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
-        ):
+        if method == "git-branch":
             return self._check_git_branch(assertion, diff, should_trigger)
-
-        if "commit" in assertion_lower and (
-            "created" in assertion_lower or "exists" in assertion_lower or "new" in assertion_lower
-        ):
+        if method == "git-commit":
             return self._check_git_commit(assertion, diff, should_trigger)
-
-        if "push" in assertion_lower and (
-            "remote" in assertion_lower or "branch" in assertion_lower or "pushed" in assertion_lower
-        ):
+        if method == "pushed":
             return self._check_pushed(assertion, diff, agent_output, should_trigger)
-
-        # Word-boundary match: a bare "pr" substring would also match
-        # "prominently", "present", "approach", etc.
-        if re.search(r"\bprs?\b|\bpull request", assertion_lower):
+        if method == "pr-created":
             return self._check_pr_created(assertion, diff, agent_output, should_trigger, output_dir)
-
-        if (
-            "file exists" in assertion_lower
-            or ("file" in assertion_lower and "exists" in assertion_lower)
-            or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"]))
-        ):
+        if method == "file-exists":
             return self._check_file_exists(assertion, output_dir, workspace)
-
-        if "ran" in assertion_lower and (
-            "command" in assertion_lower
-            or any(cmd in assertion_lower for cmd in ["npm", "git", "python", "cargo", "go"])
-        ):
+        if method == "command-ran":
             return self._check_command_ran(assertion, output_dir)
-
-        if "contains" in assertion_lower or "includes" in assertion_lower:
+        if method == "content-contains":
             return self._check_content_contains(assertion, agent_output)
-
-        if "valid json" in assertion_lower:
+        if method == "valid-json":
             return self._check_valid_json(assertion, output_dir, agent_output, workspace)
 
         return AssertionResult(
@@ -192,11 +267,7 @@ class DeterministicGrader:
         )
 
     def _resolve_workspace(self, output_dir: Path, workspace: Path | None) -> Path:
-        if workspace:
-            return workspace
-        if "with_skill" in str(output_dir) or "without_skill" in str(output_dir):
-            return output_dir.parent.parent
-        return output_dir.parent
+        return _resolve_workspace_path(output_dir, workspace)
 
     def _invert(self, should_trigger: bool) -> bool:
         """For negative controls, branch/commit/push/pr assertions are inverted."""
@@ -629,8 +700,7 @@ class LLMGrader:
         if not assertions:
             return []
 
-        if workspace is None or not workspace.exists():
-            workspace = output_dir.parent.parent if "with_skill" in str(output_dir) else output_dir.parent
+        workspace = _resolve_workspace_path(output_dir, workspace)
         file_listing = self._list_workspace_files(workspace)
         file_contents = self._read_workspace_files(workspace)
 
@@ -679,21 +749,33 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
                         method="llm",
                     )
                 )
-                returned_texts.add(r["text"])
-            for a in assertions:
-                if a not in returned_texts:
-                    results.append(
-                        AssertionResult(
-                            text=a,
-                            passed=False,
-                            evidence="LLM grader did not return a result for this assertion",
-                            method="llm",
-                        )
+                returned_texts.add(_normalize_assertion_text(r["text"]))
+            missing = [a for a in assertions if _normalize_assertion_text(a) not in returned_texts]
+            if missing:
+                # The grader dropping an assertion is a grader failure, not an
+                # agent failure: skip it so it doesn't drag down the pass rate.
+                console.print(
+                    f"[yellow]Warning: LLM grader returned no result for {len(missing)} assertion(s); "
+                    f"skipped (not failed)[/yellow]"
+                )
+            for a in missing:
+                results.append(
+                    AssertionResult(
+                        text=a,
+                        passed=False,
+                        evidence="LLM grader did not return a result for this assertion (skipped, not failed)",
+                        method="llm",
+                        skipped=True,
                     )
+                )
             return results
         except Exception as e:
             # A grader failure is not an agent failure: mark the assertions as
             # skipped so they don't drag down the pass rate.
+            console.print(
+                f"[yellow]Warning: LLM grading failed ({e}); {len(assertions)} assertion(s) skipped, "
+                f"not failed[/yellow]"
+            )
             return [
                 AssertionResult(
                     text=a,
