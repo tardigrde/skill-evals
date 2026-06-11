@@ -38,32 +38,32 @@ Done items are kept briefly for history; anything obsolete or low-value was dele
 - [x] `LLMGrader.grade`: grading errors and missing per-assertion results are now skipped (not failed) with a console warning.
 - [x] `DeterministicGrader._resolve_workspace`: workspace fallback now warns (once per run dir) instead of silently guessing; shared with the LLM grader.
 - [x] Assertion patterns documented in README (was already done on main); `validate` now also reports which assertions will fall through to the LLM rubric (`classify_assertion`).
-- [ ] claude-code's `cost_usd` is the CLI's Anthropic-list-price estimate; actual OpenRouter billing differs. Document or reconcile via OpenRouter generation API.
+- [x] claude-code's `cost_usd` reconciled when routed through OpenRouter: recomputed from token counts × OpenRouter's published per-model rates (the generation API would be exact but needs per-request ids the claude CLI doesn't expose). `timing.json` records `cost_usd_source` and keeps the CLI estimate in `cost_usd_cli`; documented in README.
 - [x] CHANGELOG.md: curated pre-0.4 entries restored (PSR-style headings), PSR configured with `mode = "update"` + insertion flag, vendored templates in `templates/` render summary lines only (no commit bodies / Co-Authored-By trailers).
 
 ## Test coverage gaps
 
-- [ ] `build_command` tested for codex only; pin claude-code and opencode invocations too.
-- [ ] `runner._build_cleanup_entry`: merged/closed/external PR-number handling uncovered.
+- [x] `build_command` pinned (full argv) for claude-code, opencode, and codex.
+- [x] `runner._build_cleanup_entry`: merged/closed/external PRs now excluded from the cleanup manifest (only OPEN PRs whose head branch the run pushed) and covered by tests.
 - [x] Report shows per-assertion evidence via `report --show-evidence` (was already done on main; verified).
 
 ## Docs
 
-- [ ] Fill out `pyproject.toml` `authors` with a real author (rest of metadata was already filled on main).
+- [x] Fill out `pyproject.toml` `authors` with a real author (rest of metadata was already filled on main).
 - [x] Version single-sourced in `pyproject.toml`: PSR `version_variables` removed, `__init__.py` falls back to `0.0.0` when not installed.
-- [ ] Document `python -m agent_skill_eval` in README (`examples/` vs `skills/` and `grading.json` debugging were already documented on main).
+- [x] Document `python -m agent_skill_eval` in README (`examples/` vs `skills/` and `grading.json` debugging were already documented on main).
 - [x] `--version` wired to package version (was already done on main; verified).
 
 ## Improvements
 
 - [x] Cost column in `agent-skill-eval report`: `benchmark.json` gains per-config `cost_usd` mean/stddev and per-agent cost deltas; report shows a Cost (USD) column.
 - [x] `init` scaffold: SKILL.md frontmatter template + negative-control example (was already done on main; verified).
-- [ ] Multi-agent comparison example showing how to read with/without-skill deltas.
-- [ ] Expand `examples/commit-push-pr/evals/files/sample_change.py` into a realistic fixture.
+- [x] Multi-agent comparison example in README ("Comparing agents") showing how to read with/without-skill deltas from the report and `benchmark.json`.
+- [x] `examples/commit-push-pr/evals/files/sample_change.py` expanded into a realistic fixture matching the eval prompts (login fix + search feature).
 - [ ] *(judgment)* Split `graders/__init__.py`, `cli.py`, `runner.py` once they next need surgery — one-time split makes everything after cheaper.
 
 ## Cleanup
 
-- [ ] Delete stale local branches (`feat/improve-commit-push-pr-skill`, `fix/login-bug`, `smoke-test-ci`, merged feature branches) after confirming merged.
-- [ ] Delete `HANDOFF.md` (untracked, stale — its mission completed 2026-06-11) and the leftover `.claude/worktrees/` copy of the old module tree.
+- [x] Stale local branches deleted (all confirmed merged via PRs #2–#8).
+- [x] `HANDOFF.md` deleted; both leftover `.claude/worktrees/` copies of the old `skill_eval` module tree removed (worktrees + branches).
 - [ ] *(judgment)* `SkillInstaller.uninstall` never called by the runner (safe today via `rmtree`, but asymmetric).

@@ -61,6 +61,27 @@ class TestOpenCodeHarnessParseOutput:
         assert "valid" in output
 
 
+class TestOpenCodeHarnessBuildCommand:
+    def test_pins_invocation(self, tmp_path):
+        harness = OpenCodeHarness(tmp_path)
+        cmd = harness.build_command("fix it", tmp_path)
+        assert cmd == [
+            "opencode",
+            "run",
+            "--dir",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--dangerously-skip-permissions",
+            "fix it",
+        ]
+
+    def test_model_flag_inserted_before_prompt(self, tmp_path):
+        harness = OpenCodeHarness(tmp_path, model="deepseek/deepseek-v4-flash:free")
+        cmd = harness.build_command("fix it", tmp_path)
+        assert cmd[-3:] == ["--model", "deepseek/deepseek-v4-flash:free", "fix it"]
+
+
 class TestClaudeCodeHarnessParseOutput:
     def test_extracts_result(self, tmp_path):
         harness = ClaudeCodeHarness(tmp_path)
@@ -87,10 +108,40 @@ class TestClaudeCodeHarnessParseOutput:
         output, timing = harness.parse_output(stdout, "")
         assert timing.cost_usd == 0.0123
 
+    def test_extracts_cache_creation_tokens(self, tmp_path):
+        harness = ClaudeCodeHarness(tmp_path)
+        stdout = json.dumps(
+            {
+                "result": "done",
+                "usage": {"input_tokens": 100, "output_tokens": 50, "cache_creation_input_tokens": 40},
+            }
+        )
+        output, timing = harness.parse_output(stdout, "")
+        assert timing.cache_creation_tokens == 40
+
     def test_handles_invalid_json(self, tmp_path):
         harness = ClaudeCodeHarness(tmp_path)
         output, timing = harness.parse_output("plain text output", "")
         assert output == "plain text output"
+
+
+class TestClaudeCodeHarnessBuildCommand:
+    def test_pins_invocation(self, tmp_path):
+        harness = ClaudeCodeHarness(tmp_path)
+        cmd = harness.build_command("fix it", tmp_path)
+        assert cmd == [
+            "claude",
+            "-p",
+            "--output-format",
+            "json",
+            "--dangerously-skip-permissions",
+            "fix it",
+        ]
+
+    def test_model_flag_inserted_before_prompt(self, tmp_path):
+        harness = ClaudeCodeHarness(tmp_path, model="claude-haiku-4-5-20251001")
+        cmd = harness.build_command("fix it", tmp_path)
+        assert cmd[-3:] == ["--model", "claude-haiku-4-5-20251001", "fix it"]
 
 
 class TestCodexHarnessParseOutput:
@@ -129,6 +180,21 @@ class TestCodexHarnessParseOutput:
         cmd = harness.build_command("fix it", tmp_path)
         assert "--skip-git-repo-check" in cmd
         assert "--full-auto" not in cmd
+
+    def test_pins_invocation(self, tmp_path):
+        harness = CodexHarness(tmp_path, model="gpt-5.4-mini")
+        cmd = harness.build_command("fix it", tmp_path)
+        assert cmd == [
+            "codex",
+            "exec",
+            "--json",
+            "--sandbox",
+            "workspace-write",
+            "--skip-git-repo-check",
+            "--model",
+            "gpt-5.4-mini",
+            "fix it",
+        ]
 
 
 class TestFakeHarness:

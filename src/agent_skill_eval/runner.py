@@ -320,12 +320,28 @@ class EvalRunner:
         new_remote_branches = sorted(post_remote - pre_remote)
 
         pre_pr_numbers = {p.get("number") for p in pre_state.open_prs}
-        new_pr_numbers = [p.get("number") for p in post_state.open_prs if p.get("number") not in pre_pr_numbers]
+        new_pr_numbers: list[int] = []
+        for p in post_state.open_prs:
+            number = p.get("number")
+            if number is None or number in pre_pr_numbers:
+                continue
+            # The PR snapshot is taken with --state all: a PR merged or
+            # closed during the run needs no cleanup.
+            state = (p.get("state") or "OPEN").upper()
+            if state != "OPEN":
+                continue
+            # A PR someone else opened on the source repo mid-run is new in
+            # the snapshot but not ours: only record PRs whose head branch
+            # this run pushed.
+            head = p.get("headRefName")
+            if head is not None and head not in new_remote_branches:
+                continue
+            new_pr_numbers.append(number)
 
         return CleanupManifest(
             source_repo=self.source_repo,
             remote_branches=new_remote_branches,
-            pr_numbers=[n for n in new_pr_numbers if n is not None],
+            pr_numbers=new_pr_numbers,
         )
 
     def _compute_benchmark(self, results: dict[str, dict], iteration_dir: Path) -> BenchmarkResult:

@@ -287,6 +287,107 @@ class TestCleanupScope:
         assert entry2.remote_branches == ["feature/eval-new"]
 
 
+class TestBuildCleanupEntryPrNumbers:
+    @staticmethod
+    def _runner(tmp_path):
+        from agent_skill_eval.runner import EvalRunner
+
+        skill_path = tmp_path / "skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
+        )
+        evals_p = tmp_path / "evals.json"
+        evals_p.write_text(json.dumps({"skill_name": "demo", "evals": []}))
+        return EvalRunner(
+            skill_path=skill_path,
+            evals_path=evals_p,
+            workspace_base=tmp_path / "ws",
+            agents=[],
+            with_baseline=False,
+        )
+
+    @staticmethod
+    def _entry(runner, pre_prs, post_prs, post_remote_branches=()):
+        from agent_skill_eval.git_state import GitStateSnapshot
+
+        pre = GitStateSnapshot(open_prs=pre_prs, current_branch="main")
+        post = GitStateSnapshot(
+            open_prs=post_prs,
+            remote_branches=list(post_remote_branches),
+            current_branch="main",
+        )
+        return runner._build_cleanup_entry(pre_state=pre, post_state=post)
+
+    def test_records_open_pr_on_eval_created_branch(self, tmp_path):
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"number": 7, "headRefName": "feature/eval-x", "state": "OPEN"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == [7]
+
+    def test_skips_pr_merged_during_run(self, tmp_path):
+        """gh pr list runs with --state all: a new-but-already-merged PR
+        needs no cleanup (and closing it again would fail)."""
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"number": 8, "headRefName": "feature/eval-x", "state": "MERGED"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == []
+
+    def test_skips_pr_closed_during_run(self, tmp_path):
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"number": 9, "headRefName": "feature/eval-x", "state": "CLOSED"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == []
+
+    def test_skips_external_pr_opened_mid_run(self, tmp_path):
+        """A PR someone else opened on the source repo during the run is new
+        in the snapshot but its head branch was not pushed by this run — the
+        manifest must not record it, or cleanup would close a stranger's PR."""
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"number": 10, "headRefName": "someone-elses-work", "state": "OPEN"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == []
+
+    def test_skips_preexisting_pr(self, tmp_path):
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[{"number": 5, "headRefName": "feature/old", "state": "OPEN"}],
+            post_prs=[{"number": 5, "headRefName": "feature/old", "state": "OPEN"}],
+        )
+        assert entry.pr_numbers == []
+
+    def test_skips_pr_without_number(self, tmp_path):
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"headRefName": "feature/eval-x", "state": "OPEN"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == []
+
+    def test_missing_state_and_head_fields_default_to_recorded(self, tmp_path):
+        """Snapshots written before state/headRefName were captured must keep
+        the old behavior: a new PR number is recorded."""
+        entry = self._entry(
+            self._runner(tmp_path),
+            pre_prs=[],
+            post_prs=[{"number": 11}],
+        )
+        assert entry.pr_numbers == [11]
+
+
 class TestGradeCommand:
     def test_grade_persists_updated_grading(self, tmp_path, evals_path):
         from agent_skill_eval.cli import grade

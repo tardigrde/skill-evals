@@ -25,7 +25,7 @@ Because the eval goes through the full harness — system prompt, skill discover
 pip install agent-skill-eval
 ```
 
-This installs two identical commands: `agent-skill-eval` and the short alias `ase`.
+This installs two identical commands: `agent-skill-eval` and the short alias `ase`. The CLI is also runnable as a module — `python -m agent_skill_eval run ...` — which is handy when the scripts directory isn't on your `PATH` or you want to pin the interpreter (e.g. `uv run python -m agent_skill_eval`).
 
 > **Coming soon:** subagent evals — evaluate custom subagent definitions the same way as skills, across the same harnesses.
 
@@ -280,6 +280,37 @@ To debug a failure: find `"passed": false` entries, read `evidence`, compare `pr
 
 1. `agent-skill-eval run ...` → 2. `agent-skill-eval report --show-evidence` → 3. edit SKILL.md → 4. `agent-skill-eval run --iteration 2 ...` → 5. `agent-skill-eval compare --workspace ... 1 2`
 
+### Comparing agents: reading with/without-skill deltas
+
+Run several agents in one invocation and every agent gets its own baseline comparison:
+
+```bash
+agent-skill-eval run \
+  --skill ./skills/fix-failing-tests \
+  --evals ./examples/fix-failing-tests/evals/evals.json \
+  --agent claude-code --agent-model claude-code=claude-haiku-4-5-20251001 \
+  --agent opencode --agent-model opencode=deepseek/deepseek-v4-flash:free \
+  --runs 3
+
+agent-skill-eval report --workspace ./eval-workspace/fix-failing-tests-workspace --format markdown
+```
+
+The report shows one row per (agent, config) and a delta per agent (numbers below are illustrative):
+
+| Configuration | Pass Rate | Full Pass / pass@k | Time (s) | Tokens | Cost (USD) |
+| --- | --- | --- | --- | --- | --- |
+| claude-code_with_skill | 91.7% +/- 14.4% | 67% (k=3) | 41.2 +/- 8.0 | 1840 +/- 312 | 0.0042 +/- 0.0011 |
+| claude-code_without_skill | 58.3% +/- 14.4% | 33% (k=3) | 52.7 +/- 12.1 | 2410 +/- 405 | 0.0058 +/- 0.0019 |
+| opencode_with_skill | 83.3% +/- 0.0% | 67% (k=3) | 64.9 +/- 9.3 | 2980 +/- 220 | 0.0000 +/- 0.0000 |
+| opencode_without_skill | 50.0% +/- 25.0% | 33% (k=3) | 71.5 +/- 15.8 | 3340 +/- 510 | 0.0000 +/- 0.0000 |
+
+**Delta (with_skill - without_skill):**
+
+- `claude-code`: pass rate +33.3%, time -11.5s, tokens -570, cost -0.0016 USD
+- `opencode`: pass rate +33.3%, time -6.6s, tokens -360, cost +0.0000 USD
+
+How to read it: the **delta rows** are the skill's measured value per agent — here the skill lifts pass rate by ~33 points on both agents *and* saves time/tokens, the strongest possible signal. A positive pass-rate delta with a large token increase means the skill works but is verbose; a near-zero delta means that agent doesn't benefit (check `report --show-evidence` to see whether it never triggered the skill). The same numbers are machine-readable in `benchmark.json`: per-config stats under `run_summary`, per-agent deltas under `deltas`, keyed by agent name.
+
 ## Environment variables
 
 - `OPENROUTER_API_KEY` / `OPENAI_API_KEY`: API key for LLM rubric grading
@@ -293,7 +324,16 @@ To debug a failure: find `"passed": false` entries, read `evidence`, compare `pr
 | --- | --- | --- |
 | OpenCode | `opencode run --format json --dangerously-skip-permissions` | `.opencode/skills/<name>/SKILL.md` |
 | Claude Code | `claude -p --output-format json --dangerously-skip-permissions` | `.claude/skills/<name>/SKILL.md` |
-| Codex | `codex exec --json --full-auto` | `.codex/skills/<name>/SKILL.md` |
+| Codex | `codex exec --json --sandbox workspace-write --skip-git-repo-check` | `.codex/skills/<name>/SKILL.md` |
+
+### Cost reporting
+
+`timing.json` records `cost_usd` per run, taken from the agent CLI itself (claude: `total_cost_usd`, opencode: per-step `cost`; codex reports nothing). One sharp edge: the claude CLI prices runs at **Anthropic list prices** regardless of the endpoint it talks to. When you route claude-code through OpenRouter (`--harness-base-url` or `ANTHROPIC_BASE_URL`), agent-skill-eval reconciles the cost by recomputing it from the run's token counts and OpenRouter's published per-model rates. `timing.json` then shows:
+
+- `cost_usd_source`: `"cli"` (the CLI's own number), `"openrouter-pricing"` (reconciled), or `"cli-unreconciled"` (reconciliation failed — e.g. a short model alias like `haiku` that can't be mapped to an OpenRouter slug — so `cost_usd` is the CLI's list-price estimate and actual billing differs)
+- `cost_usd_cli`: the CLI's original estimate, kept alongside the reconciled value
+
+Pin full model IDs (`claude-haiku-4-5-20251001`, not `haiku`) to keep reconciliation working.
 
 ## Development
 

@@ -44,6 +44,11 @@ class AgentHarness(ABC):
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
         pass
 
+    def finalize_timing(self, timing: TimingData) -> None:
+        """Post-process timing after a run (e.g. cost reconciliation)."""
+        if timing.cost_usd and timing.cost_usd_source is None:
+            timing.cost_usd_source = "cli"
+
     def _build_env(self) -> Optional[dict[str, str]]:
         if self.base_url and self.base_url_env:
             env = dict(os.environ)
@@ -141,6 +146,7 @@ class AgentHarness(ABC):
         timing.exit_code = exit_code
         timing.timed_out = timed_out
         timing.retries = retries_used
+        self.finalize_timing(timing)
 
         with open(output_dir / "stdout.log", "w", encoding="utf-8") as f:
             f.write(stdout)
@@ -231,6 +237,7 @@ class ClaudeCodeHarness(AgentHarness):
                 timing.input_tokens = usage.get("input_tokens", 0)
                 timing.output_tokens = usage.get("output_tokens", 0)
                 timing.cached_tokens = usage.get("cache_read_input_tokens", 0)
+                timing.cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
                 timing.cost_usd = data.get("total_cost_usd", 0.0) or 0.0
                 timing.total_tokens = timing.input_tokens + timing.output_tokens
                 duration_s = data.get("duration_ms", 0)
@@ -240,6 +247,31 @@ class ClaudeCodeHarness(AgentHarness):
             final_text = stdout
 
         return final_text, timing
+
+    def finalize_timing(self, timing: TimingData) -> None:
+        """Reconcile the CLI's cost estimate when running via OpenRouter.
+
+        The claude CLI prices runs at Anthropic list prices regardless of the
+        endpoint it talks to. When ANTHROPIC_BASE_URL points at OpenRouter,
+        actual billing follows OpenRouter's per-model pricing, so we recompute
+        from token counts (the generation API would be exact but needs
+        per-request ids the CLI does not expose). The CLI's own number is kept
+        in cost_usd_cli.
+        """
+        base = self.base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
+        if "openrouter" not in base.lower():
+            super().finalize_timing(timing)
+            return
+
+        from agent_skill_eval.openrouter import reconcile_claude_cost
+
+        reconciled = reconcile_claude_cost(timing, self.model)
+        if reconciled is None:
+            timing.cost_usd_source = "cli-unreconciled"
+            return
+        timing.cost_usd_cli = timing.cost_usd
+        timing.cost_usd = reconciled
+        timing.cost_usd_source = "openrouter-pricing"
 
 
 class CodexHarness(AgentHarness):

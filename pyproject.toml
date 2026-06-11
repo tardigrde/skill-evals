@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 license = "MIT"
 readme = "README.md"
 authors = [
-    { name = "agent-skill-eval contributors" },
+    { name = "Levente Csoke", email = "leventec3@gmail.com" },
 ]
 keywords = ["agent", "evaluation", "skills", "benchmark", "llm"]
 classifiers = [

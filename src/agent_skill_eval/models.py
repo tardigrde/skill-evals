@@ -74,9 +74,20 @@ class TimingData(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    cache_creation_tokens: int = 0
     # USD cost as reported by the agent CLI itself (claude: total_cost_usd,
     # opencode: per-step cost). 0.0 when the CLI reports nothing (codex, fake).
+    # For claude-code routed through OpenRouter, this is reconciled against
+    # OpenRouter pricing (see cost_usd_source / cost_usd_cli).
     cost_usd: float = 0.0
+    # Where cost_usd came from: "cli" (the agent CLI's own number),
+    # "openrouter-pricing" (recomputed from token counts and OpenRouter's
+    # published per-model rates), or "cli-unreconciled" (claude-code ran via
+    # OpenRouter but reconciliation failed, so this is the CLI's
+    # Anthropic-list-price estimate and actual billing differs).
+    cost_usd_source: Optional[str] = None
+    # The CLI's original estimate, kept when cost_usd was reconciled.
+    cost_usd_cli: Optional[float] = None
     duration_ms: int = 0
     exit_code: Optional[int] = None
     timed_out: bool = False
