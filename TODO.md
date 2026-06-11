@@ -33,30 +33,31 @@ Done items are kept briefly for history; anything obsolete or low-value was dele
 
 ## Bugs / sharp edges
 
-- [ ] `negative-control` eval: assertion "The output contains the source code of calculator.py" is grader-run-dependent (failed for all agents in one run, passed in another). Reword to behavior ("file read, not modified, no tests run").
-- [ ] `agent-skill-eval grade --recompute-benchmark` re-runs the LLM grader fresh; cached grades can flip silently. Surface in CLI output + README.
-- [ ] `LLMGrader.grade` swallows errors and marks undetermined assertions as failed. Prefer skip-with-warning.
-- [ ] `DeterministicGrader._resolve_workspace` relies on `with_skill`/`without_skill` substrings; silently falls back to `output_dir.parent`. Pass workspace explicitly or warn.
-- [ ] No user-facing schema of supported deterministic assertion patterns; unknown shapes fall through to LLM silently.
+- [x] `negative-control` eval: reworded "output contains the source code" assertion to behavior ("read and displayed or described its contents").
+- [x] `grade` re-running the LLM grader fresh is surfaced in CLI output and README (was already done on main; verified).
+- [x] `LLMGrader.grade`: grading errors and missing per-assertion results are now skipped (not failed) with a console warning.
+- [x] `DeterministicGrader._resolve_workspace`: workspace fallback now warns (once per run dir) instead of silently guessing; shared with the LLM grader.
+- [x] Assertion patterns documented in README (was already done on main); `validate` now also reports which assertions will fall through to the LLM rubric (`classify_assertion`).
 - [ ] claude-code's `cost_usd` is the CLI's Anthropic-list-price estimate; actual OpenRouter billing differs. Document or reconcile via OpenRouter generation API.
-- [ ] semantic-release regenerated CHANGELOG.md from raw git history: curated 0.1–0.3 entries were replaced and commit trailers (Co-Authored-By) leak in. Configure the PSR changelog template (exclude trailers, keep insertion-only mode) and restore the curated pre-0.4 entries from git (`git show v0.4.0~1:CHANGELOG.md`).
+- [x] CHANGELOG.md: curated pre-0.4 entries restored (PSR-style headings), PSR configured with `mode = "update"` + insertion flag, vendored templates in `templates/` render summary lines only (no commit bodies / Co-Authored-By trailers).
 
 ## Test coverage gaps
 
 - [ ] `build_command` tested for codex only; pin claude-code and opencode invocations too.
 - [ ] `runner._build_cleanup_entry`: merged/closed/external PR-number handling uncovered.
-- [ ] Report does not show per-assertion evidence from `grading.json` — the richest output is invisible in the CLI.
+- [x] Report shows per-assertion evidence via `report --show-evidence` (was already done on main; verified).
 
 ## Docs
 
-- [ ] Fill out `pyproject.toml` metadata (`authors`, `readme`, `homepage`, `keywords`, `classifiers`); single-source the version (currently duplicated with `__init__.py`).
-- [ ] Document `examples/` vs `skills/` convention, `python -m agent_skill_eval`, and how to debug a failing assertion via `grading.json` evidence.
-- [ ] Wire `--version` to package version.
+- [ ] Fill out `pyproject.toml` `authors` with a real author (rest of metadata was already filled on main).
+- [x] Version single-sourced in `pyproject.toml`: PSR `version_variables` removed, `__init__.py` falls back to `0.0.0` when not installed.
+- [ ] Document `python -m agent_skill_eval` in README (`examples/` vs `skills/` and `grading.json` debugging were already documented on main).
+- [x] `--version` wired to package version (was already done on main; verified).
 
 ## Improvements
 
-- [ ] Cost column in `agent-skill-eval report` (data already in `timing.json`).
-- [ ] `init` scaffold: SKILL.md frontmatter template + negative-control example by default.
+- [x] Cost column in `agent-skill-eval report`: `benchmark.json` gains per-config `cost_usd` mean/stddev and per-agent cost deltas; report shows a Cost (USD) column.
+- [x] `init` scaffold: SKILL.md frontmatter template + negative-control example (was already done on main; verified).
 - [ ] Multi-agent comparison example showing how to read with/without-skill deltas.
 - [ ] Expand `examples/commit-push-pr/evals/files/sample_change.py` into a realistic fixture.
 - [ ] *(judgment)* Split `graders/__init__.py`, `cli.py`, `runner.py` once they next need surgery — one-time split makes everything after cheaper.

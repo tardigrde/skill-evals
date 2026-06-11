@@ -492,12 +492,14 @@ def _collect_results(workspace: Path) -> dict[str, dict]:
     return results
 
 
-def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str]]:
+def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str, str]]:
     rows = []
     for config, stats in benchmark.get("run_summary", {}).items():
         pass_rate = stats.get("pass_rate", {})
         time_s = stats.get("time_seconds", {})
         tokens = stats.get("tokens", {})
+        # benchmark.json from runs before cost stats existed lacks the field.
+        cost = stats.get("cost_usd") or {}
         k = stats.get("k", 1)
         pass_at_k = f"{stats.get('pass_at_k', 0):.0%} (k={k})" if k > 1 else f"{stats.get('full_pass_rate', 0):.0%}"
         rows.append(
@@ -507,6 +509,7 @@ def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str]]:
                 pass_at_k,
                 f"{time_s.get('mean', 0):.1f} +/- {time_s.get('stddev', 0):.1f}",
                 f"{tokens.get('mean', 0):.0f} +/- {tokens.get('stddev', 0):.0f}",
+                f"{cost.get('mean', 0):.4f} +/- {cost.get('stddev', 0):.4f}",
             )
         )
     return rows
@@ -519,7 +522,7 @@ def _benchmark_deltas(benchmark: dict) -> dict[str, dict]:
     return deltas
 
 
-REPORT_COLUMNS = ["Configuration", "Pass Rate", "Full Pass / pass@k", "Time (s)", "Tokens"]
+REPORT_COLUMNS = ["Configuration", "Pass Rate", "Full Pass / pass@k", "Time (s)", "Tokens", "Cost (USD)"]
 
 
 def _print_markdown_report(iter_name: str, benchmark: dict) -> None:
@@ -534,7 +537,8 @@ def _print_markdown_report(iter_name: str, benchmark: dict) -> None:
         for agent, delta in deltas.items():
             print(
                 f"- `{agent}`: pass rate {delta.get('pass_rate', 0):+.1%}, "
-                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}"
+                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}, "
+                f"cost {delta.get('cost_usd', 0):+.4f} USD"
             )
 
 
@@ -542,11 +546,9 @@ def _print_table_report(iter_name: str, benchmark: dict) -> None:
     console.print(f"\n[bold]{iter_name}[/bold]")
 
     table = Table(title="Results Summary")
-    table.add_column(REPORT_COLUMNS[0], style="cyan")
-    table.add_column(REPORT_COLUMNS[1], style="green")
-    table.add_column(REPORT_COLUMNS[2], style="magenta")
-    table.add_column(REPORT_COLUMNS[3], style="yellow")
-    table.add_column(REPORT_COLUMNS[4], style="blue")
+    styles = ["cyan", "green", "magenta", "yellow", "blue", "white"]
+    for column, style in zip(REPORT_COLUMNS, styles):
+        table.add_column(column, style=style)
     for row in _benchmark_rows(benchmark):
         table.add_row(*row)
     console.print(table)
@@ -557,7 +559,8 @@ def _print_table_report(iter_name: str, benchmark: dict) -> None:
         for agent, delta in deltas.items():
             console.print(
                 f"  {agent}: pass rate {delta.get('pass_rate', 0):+.1%}, "
-                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}"
+                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}, "
+                f"cost {delta.get('cost_usd', 0):+.4f} USD"
             )
 
 
@@ -720,7 +723,26 @@ def validate(
         console.print(f"[red]Duplicate eval ids: {duplicates}[/red]")
         raise typer.Exit(1)
 
+    from agent_skill_eval.graders import classify_assertion
+
+    llm_assertions: list[tuple[str, str]] = []
+    total_assertions = 0
+    for eval_case in suite.evals:
+        for assertion in eval_case.assertions:
+            total_assertions += 1
+            if classify_assertion(assertion) == "llm":
+                llm_assertions.append((str(eval_case.id), assertion))
+
     console.print(f"[green]Valid: {len(suite.evals)} eval(s) for skill '{suite.skill_name}'[/green]")
+    if llm_assertions:
+        console.print(
+            f"[yellow]{len(llm_assertions)}/{total_assertions} assertion(s) match no deterministic "
+            f"pattern and will be graded by the LLM rubric (needs an API key; verdicts can vary):[/yellow]"
+        )
+        for eval_id, assertion in llm_assertions:
+            console.print(f"  [dim]{eval_id}: {assertion}[/dim]")
+    elif total_assertions:
+        console.print(f"[green]All {total_assertions} assertion(s) match deterministic patterns[/green]")
 
 
 @app.command(name="list")

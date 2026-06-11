@@ -122,6 +122,8 @@ class BenchmarkStats(BaseModel):
     pass_rate: StatsPair
     time_seconds: StatsPair
     tokens: StatsPair
+    # USD cost per run as reported by the agent CLI (see TimingData.cost_usd).
+    cost_usd: StatsPair = Field(default_factory=lambda: StatsPair(mean=0.0, stddev=0.0))
     # Fraction of runs where ALL assertions passed (pass@1 estimate).
     full_pass_rate: float = 0.0
     # Fraction of evals where at least one of k runs fully passed.
@@ -147,3 +149,4 @@ class DeltaStats(BaseModel):
     pass_rate: float
     time_seconds: float
     tokens: float
+    cost_usd: float = 0.0
