@@ -51,6 +51,10 @@ packages = ["src/skill_eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: e2e tests that call real agent CLIs and paid APIs (needs SKILL_EVAL_LIVE=1)",
+]
+addopts = "-m 'not live'"
 
 [tool.ruff]
 target-version = "py311"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
 
 
@@ -25,6 +27,15 @@ class TestOpenCodeHarnessParseOutput:
         assert timing.output_tokens == 50
         assert timing.cached_tokens == 20
         assert timing.total_tokens == 150
+
+    def test_accumulates_cost_across_steps(self, tmp_path):
+        harness = OpenCodeHarness(tmp_path)
+        events = [
+            json.dumps({"type": "step_finish", "part": {"tokens": {}, "cost": 0.001}}),
+            json.dumps({"type": "step_finish", "part": {"tokens": {}, "cost": 0.002}}),
+        ]
+        output, timing = harness.parse_output("\n".join(events), "")
+        assert timing.cost_usd == pytest.approx(0.003)
 
     def test_handles_multiple_events(self, tmp_path):
         harness = OpenCodeHarness(tmp_path)
@@ -70,6 +81,12 @@ class TestClaudeCodeHarnessParseOutput:
         output, timing = harness.parse_output(stdout, "")
         assert timing.cached_tokens == 30
 
+    def test_extracts_cost(self, tmp_path):
+        harness = ClaudeCodeHarness(tmp_path)
+        stdout = json.dumps({"result": "done", "usage": {}, "total_cost_usd": 0.0123})
+        output, timing = harness.parse_output(stdout, "")
+        assert timing.cost_usd == 0.0123
+
     def test_handles_invalid_json(self, tmp_path):
         harness = ClaudeCodeHarness(tmp_path)
         output, timing = harness.parse_output("plain text output", "")
@@ -106,6 +123,12 @@ class TestCodexHarnessParseOutput:
         output, timing = harness.parse_output("", "")
         assert output == ""
         assert timing.total_tokens == 0
+
+    def test_build_command_skips_git_trust_check(self, tmp_path):
+        harness = CodexHarness(tmp_path)
+        cmd = harness.build_command("fix it", tmp_path)
+        assert "--skip-git-repo-check" in cmd
+        assert "--full-auto" not in cmd
 
 
 class TestFakeHarness:
