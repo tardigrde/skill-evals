@@ -193,6 +193,7 @@ class OpenCodeHarness(AgentHarness):
                     timing.output_tokens += tokens.get("output", 0)
                     cache = tokens.get("cache", {})
                     timing.cached_tokens += cache.get("read", 0)
+                    timing.cost_usd += part.get("cost", 0) or 0
 
             except json.JSONDecodeError:
                 continue
@@ -230,6 +231,7 @@ class ClaudeCodeHarness(AgentHarness):
                 timing.input_tokens = usage.get("input_tokens", 0)
                 timing.output_tokens = usage.get("output_tokens", 0)
                 timing.cached_tokens = usage.get("cache_read_input_tokens", 0)
+                timing.cost_usd = data.get("total_cost_usd", 0.0) or 0.0
                 timing.total_tokens = timing.input_tokens + timing.output_tokens
                 duration_s = data.get("duration_ms", 0)
                 if duration_s:
@@ -249,7 +251,11 @@ class CodexHarness(AgentHarness):
             "codex",
             "exec",
             "--json",
-            "--full-auto",
+            "--sandbox",
+            "workspace-write",
+            # Eval workspaces are freshly git-inited dirs codex has never
+            # seen; without this codex blocks on its trust prompt.
+            "--skip-git-repo-check",
         ]
         if self.model:
             cmd.extend(["--model", self.model])

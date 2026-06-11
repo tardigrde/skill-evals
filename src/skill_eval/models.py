@@ -74,6 +74,9 @@ class TimingData(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cached_tokens: int = 0
+    # USD cost as reported by the agent CLI itself (claude: total_cost_usd,
+    # opencode: per-step cost). 0.0 when the CLI reports nothing (codex, fake).
+    cost_usd: float = 0.0
     duration_ms: int = 0
     exit_code: Optional[int] = None
     timed_out: bool = False
