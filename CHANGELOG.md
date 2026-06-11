@@ -6,6 +6,95 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.5.0 (2026-06-11)
+
+### Bug Fixes
+
+- **harness**: Harden OpenRouter pricing fetch (review feedback)
+  ([`d40feba`](https://github.com/tardigrde/agent-skill-eval/commit/d40febaa75807aed7f09132ef999d972983ddde7))
+
+Guard the pricing cache with a lock (eval threads run concurrently and could fire redundant
+  fetches), send a real User-Agent (CDN-fronted APIs commonly 403 urllib's default), and type-check
+  the response shape before indexing into it.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **runner**: Only record eval-created open PRs in cleanup manifest
+  ([`d588d1c`](https://github.com/tardigrde/agent-skill-eval/commit/d588d1cb65c6ada6c2b8d0e7b99987045875261e))
+
+The PR snapshot is taken with `gh pr list --state all`, so _build_cleanup_entry could record PRs
+  that were merged or closed during the run, and even PRs someone else opened on the source repo
+  mid-run — cleanup would then try to close a stranger's PR with --delete-branch.
+
+Record a new PR number only when the PR is still OPEN and its head branch is one this run pushed.
+  Snapshots from before state/headRefName were captured keep the old behavior.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Chores
+
+- **examples**: Expand sample_change.py into a realistic fixture
+  ([`fdb3a4a`](https://github.com/tardigrde/agent-skill-eval/commit/fdb3a4a1f7a2f411470af7f8fef4f1d6bf99f542))
+
+The two-line print fixture gave agents nothing plausible to commit. The new fixture is a small
+  user-directory module whose contents match what the eval prompts claim about it: a login fix
+  (email normalization in authenticate) and a new search feature (search_users).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Documentation
+
+- Real author metadata, python -m usage, cost reporting, agent comparison
+  ([`03abf2a`](https://github.com/tardigrde/agent-skill-eval/commit/03abf2a21e56c96f9064c2e7345a4fdcc8524f31))
+
+- pyproject authors: replace the placeholder with the real maintainer - README: document running the
+  CLI as `python -m agent_skill_eval` - README: fix the stale codex invocation row (--full-auto was
+  replaced by --sandbox workspace-write --skip-git-repo-check) - README: document cost_usd semantics
+  and the OpenRouter reconciliation (cost_usd_source / cost_usd_cli in timing.json) - README: add a
+  multi-agent comparison walkthrough showing how to read per-agent with/without-skill deltas from
+  the report and benchmark.json
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- **todo**: Mark TODO batch done — cost reconcile, tests, docs, cleanup
+  ([`2143eb0`](https://github.com/tardigrde/agent-skill-eval/commit/2143eb007eadda282df36deeec43f51c4f6eb933))
+
+Local-only cleanup also performed (not visible in the diff): stale merged local branches deleted,
+  both .claude/worktrees copies of the old skill_eval module tree removed, stale untracked
+  HANDOFF.md deleted.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Features
+
+- **harness**: Reconcile claude-code cost against OpenRouter pricing
+  ([`5246951`](https://github.com/tardigrde/agent-skill-eval/commit/524695144c8b1260da1b6bde28c4f66744822567))
+
+The claude CLI prices runs at Anthropic list prices regardless of the endpoint it talks to, so
+  cost_usd was wrong whenever the harness routed claude-code through OpenRouter. The generation API
+  would give exact billed amounts but needs per-request ids the CLI does not expose; instead,
+  recompute from the run's token counts and OpenRouter's published per-model rates (fetched once per
+  process from the public models endpoint).
+
+timing.json now records cost_usd_source ("cli", "openrouter-pricing", or "cli-unreconciled" when the
+  model cannot be mapped to an OpenRouter slug) and keeps the CLI's original estimate in
+  cost_usd_cli. Cache creation tokens are now captured too so the reconciled cost includes
+  cache-write charges.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Testing
+
+- **harness**: Pin claude-code, opencode, and codex CLI invocations
+  ([`c224898`](https://github.com/tardigrde/agent-skill-eval/commit/c2248982ee72bd92a18d412f3157e522ca9b586b))
+
+build_command was only pinned for codex (and only the trust-check flag). Pin the full argv for all
+  three real harnesses so a flag regression fails loudly, and cover cache_creation_input_tokens
+  parsing.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.4.1 (2026-06-11)
 
 ### Bug Fixes

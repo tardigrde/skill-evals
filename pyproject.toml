@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-skill-eval"
-version = "0.4.1"
+version = "0.5.0"
 description = "Framework for evaluating agent skills across OpenCode, Claude Code, and Codex"
 requires-python = ">=3.11"
 license = "MIT"
@@ -46,6 +46,7 @@ dev = [
 [project.scripts]
 agent-skill-eval = "agent_skill_eval.cli:app"
 ase = "agent_skill_eval.cli:app"
+
 
 
 
