@@ -6,6 +6,57 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.4.1 (2026-06-11)
+
+### Bug Fixes
+
+- Todo batch — grader honesty, cost reporting, curated changelog
+  ([#11](https://github.com/tardigrde/agent-skill-eval/pull/11),
+  [`33ab02c`](https://github.com/tardigrde/agent-skill-eval/commit/33ab02c6c5ac3459d1987ba46ae3cc85038f8685))
+
+* fix: grader honesty — skip-with-warning, workspace fallback warning, behavior-based negative
+  control
+
+- LLMGrader: grading errors and missing per-assertion results are now skipped (not failed) and
+  warned about on stderr, so grader failures never masquerade as agent failures. - Workspace
+  resolution for file-based checks is shared between the deterministic and LLM graders and warns
+  (once per run dir) when it falls back to guessing from the output directory layout. -
+  fix-failing-tests negative-control: reword the grader-run-dependent 'output contains the source
+  code' assertion to the behavior that matters (file read and displayed/described).
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+* feat: cost column in report, validate flags LLM-rubric assertions, curated changelog
+
+- benchmark.json: per-config cost_usd mean/stddev and per-agent cost deltas; report gains a Cost
+  (USD) column (table and markdown). - validate: classify_assertion() reports which assertions match
+  no deterministic pattern and will be graded by the LLM rubric, instead of that happening silently
+  at run time. - CHANGELOG.md: restore curated pre-0.4 entries (PSR-style headings);
+  semantic-release now runs in insertion-only update mode with vendored templates that render commit
+  summary lines only — no more commit bodies or Co-Authored-By trailers leaking into the changelog.
+  - Version is single-sourced from pyproject.toml (PSR version_variables removed; __init__ falls
+  back to 0.0.0 when not installed). - TODO.md: tick everything done in this batch and items
+  verified already done on main.
+
+* fix: normalize assertion text when matching LLM grader responses
+
+LLMs echo assertions with minor drift (casing, trailing periods, whitespace); exact-match made those
+  falsely count as missing results. Addresses Gemini review on PR #11.
+
+* chore: remove vendored PSR templates, use defaults
+
+---------
+
+Co-authored-by: Claude Fable 5 <noreply@anthropic.com>
+
+### Documentation
+
+- Update TODO — v0.4.0 state, subagent evals next, agent working notes
+  ([`4b5b76f`](https://github.com/tardigrde/agent-skill-eval/commit/4b5b76faed27678bf81a23cb9b2478e90c590c82))
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.4.0 (2026-06-11)
 
 ### Changed
