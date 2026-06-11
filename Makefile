@@ -21,8 +21,10 @@ OPENROUTER_API_KEY ?= $(shell grep -s '^OPENROUTER_API_KEY' .env | cut -d= -f2- 
 SKILL  ?= skills/fix-failing-tests
 EVALS  ?= examples/fix-failing-tests/evals/evals.json
 
-# Pinned free/cheap OpenRouter models (see config/baseline.env to override)
-CLAUDE_CODE_MODEL  ?= deepseek/deepseek-v4-flash:free
+# Pinned free/cheap models (see config/baseline.env to override).
+# claude-code needs a real Anthropic model ID: the claude CLI validates
+# --model client-side and rejects OpenRouter-only slugs.
+CLAUDE_CODE_MODEL  ?= claude-haiku-4-5-20251001
 OPENCODE_MODEL     ?= deepseek/deepseek-v4-flash:free
 CODEX_MODEL        ?= gpt-5.4-mini
 GRADER_MODEL       ?= deepseek/deepseek-v4-flash:free
@@ -88,6 +90,10 @@ test-live: export SKILL_EVAL_LIVE        = 1
 test-live: export ANTHROPIC_BASE_URL     = https://openrouter.ai/api
 test-live: export ANTHROPIC_AUTH_TOKEN   = $(OPENROUTER_API_KEY)
 test-live: export ANTHROPIC_API_KEY      =
+test-live: export CLAUDE_CODE_MODEL      := $(CLAUDE_CODE_MODEL)
+test-live: export OPENCODE_MODEL         := $(OPENCODE_MODEL)
+test-live: export CODEX_MODEL            := $(CODEX_MODEL)
+test-live: export GRADER_MODEL           := $(GRADER_MODEL)
 test-live:
 	uv run pytest -v tests/test_e2e.py -m live
 

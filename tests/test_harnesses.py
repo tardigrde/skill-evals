@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
 
 
@@ -33,7 +35,7 @@ class TestOpenCodeHarnessParseOutput:
             json.dumps({"type": "step_finish", "part": {"tokens": {}, "cost": 0.002}}),
         ]
         output, timing = harness.parse_output("\n".join(events), "")
-        assert timing.cost_usd == 0.003
+        assert timing.cost_usd == pytest.approx(0.003)
 
     def test_handles_multiple_events(self, tmp_path):
         harness = OpenCodeHarness(tmp_path)
