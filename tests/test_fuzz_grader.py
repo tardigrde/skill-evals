@@ -3,8 +3,8 @@ from __future__ import annotations
 import random
 import string
 
-from skill_eval.graders import DeterministicGrader
-from skill_eval.models import AssertionResult, GitStateSnapshot
+from agent_skill_eval.graders import DeterministicGrader
+from agent_skill_eval.models import AssertionResult, GitStateSnapshot
 
 random.seed(0)
 

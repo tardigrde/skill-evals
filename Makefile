@@ -1,4 +1,4 @@
-# skill-eval Makefile
+# agent-skill-eval Makefile
 #
 # Usage:
 #   make cheap-eval SKILL=examples/fix-failing-tests EVALS=examples/fix-failing-tests/evals/evals.json
@@ -51,7 +51,7 @@ cheap-eval: export ANTHROPIC_BASE_URL    = https://openrouter.ai/api
 cheap-eval: export ANTHROPIC_AUTH_TOKEN  = $(OPENROUTER_API_KEY)
 cheap-eval: export ANTHROPIC_API_KEY     =
 cheap-eval:
-	uv run skill-eval run \
+	uv run agent-skill-eval run \
 		--skill $(SKILL) \
 		--evals $(EVALS) \
 		$(AGENT_FLAGS) \
@@ -69,7 +69,7 @@ full-eval: cheap-eval
 
 ## fake-eval: fake harness only — zero API cost, CI-safe, no env vars needed
 fake-eval:
-	uv run skill-eval run \
+	uv run agent-skill-eval run \
 		--skill $(SKILL) \
 		--evals $(EVALS) \
 		--agent fake \
@@ -79,14 +79,14 @@ fake-eval:
 
 ## test: run unit + smoke tests (includes free e2e pipeline test)
 test:
-	uv run pytest -v --cov=skill_eval --cov-report=term-missing tests/
+	uv run pytest -v --cov=agent_skill_eval --cov-report=term-missing tests/
 
 ## test-e2e: free end-to-end pipeline tests only (fake harness, no API calls)
 test-e2e:
 	uv run pytest -v tests/test_e2e.py -m "not live"
 
 ## test-live: paid e2e tests against real agents + grader (claude-code, opencode, codex)
-test-live: export SKILL_EVAL_LIVE        = 1
+test-live: export ASE_LIVE        = 1
 test-live: export ANTHROPIC_BASE_URL     = https://openrouter.ai/api
 test-live: export ANTHROPIC_AUTH_TOKEN   = $(OPENROUTER_API_KEY)
 test-live: export ANTHROPIC_API_KEY      =

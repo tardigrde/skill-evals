@@ -2,7 +2,7 @@
 
 ## Project
 
-Python CLI framework (`skill-eval`) for evaluating agent skills across OpenCode, Claude Code, and Codex. Uses Typer, Pydantic, OpenAI SDK, and Rich.
+Python CLI framework (`agent-skill-eval`) for evaluating agent skills across OpenCode, Claude Code, and Codex. Uses Typer, Pydantic, OpenAI SDK, and Rich.
 
 ## Quick commands
 
@@ -24,7 +24,7 @@ uv run --extra dev ruff check src/ tests/ && uv run --extra dev ruff format --ch
 ## Architecture
 
 ```
-src/skill_eval/
+src/agent_skill_eval/
 ├── cli.py            # Typer CLI app (run, report, grade, cleanup, init)
 ├── runner.py         # EvalRunner orchestrates eval execution
 ├── graders/__init__.py   # DeterministicGrader + LLMGrader (700+ lines, single file)
@@ -35,8 +35,8 @@ src/skill_eval/
 └── workspace.py      # Workspace creation (fresh git init or clone)
 ```
 
-- Entry point: `skill_eval.cli:app` (registered as `skill-eval` console script)
-- Package layout: `src/skill_eval/` (hatchling build, wheel packages `src/skill_eval`)
+- Entry point: `agent_skill_eval.cli:app` (registered as `agent-skill-eval` console script)
+- Package layout: `src/agent_skill_eval/` (hatchling build, wheel packages `src/agent_skill_eval`)
 - The `fake` harness (used in tests) is a no-op agent that produces deterministic output
 
 ## Testing

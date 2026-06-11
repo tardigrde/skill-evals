@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/skill-eval
+      url: https://pypi.org/p/agent-skill-eval
     permissions:
       # Required for PyPI trusted publishing (OIDC).
       id-token: write

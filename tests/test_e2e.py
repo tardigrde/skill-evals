@@ -1,6 +1,6 @@
 """End-to-end pipeline tests.
 
-These exercise the real CLI (``skill-eval run`` / ``skill-eval report``) as a
+These exercise the real CLI (``agent-skill-eval run`` / ``agent-skill-eval report``) as a
 subprocess — the same path ``make cheap-eval`` takes — rather than calling
 internals, so they catch wiring problems unit tests cannot (CLI arg parsing,
 workspace layout, artifact serialization, report aggregation).
@@ -11,7 +11,7 @@ Two tiers:
   network, no API keys.
 * Live tier (``make test-live``): real agent CLIs (claude-code, opencode,
   codex) plus the LLM grader. Locks in the "every harness completes with real
-  output and real grades" milestone. Requires SKILL_EVAL_LIVE=1, OpenRouter
+  output and real grades" milestone. Requires ASE_LIVE=1, OpenRouter
   routing env vars, opencode Zen auth, and ~/.codex auth. Costs real (small)
   money, so it is opt-in via the ``live`` pytest marker.
 """
@@ -40,7 +40,7 @@ LIVE_AGENTS = ["claude-code", "opencode", "codex"]
 
 def _run_cli(args: list[str], timeout: int = 1800) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "skill_eval", *args],
+        [sys.executable, "-m", "agent_skill_eval", *args],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -125,8 +125,8 @@ class TestFakePipelineE2E:
 
 def _live_preflight() -> str | None:
     """Return a skip reason if the live environment is not set up."""
-    if os.environ.get("SKILL_EVAL_LIVE") != "1":
-        return "SKILL_EVAL_LIVE != 1 (use `make test-live`)"
+    if os.environ.get("ASE_LIVE") != "1":
+        return "ASE_LIVE != 1 (use `make test-live`)"
     if not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return "ANTHROPIC_AUTH_TOKEN not set (OpenRouter routing for claude-code)"
     for cli in ("claude", "opencode", "codex"):

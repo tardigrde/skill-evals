@@ -9,8 +9,8 @@ from typing import Optional
 
 from openai import OpenAI, OpenAIError
 
-from skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
-from skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
+from agent_skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
 
 
 def _is_open_pr_state(state: Optional[str]) -> bool:

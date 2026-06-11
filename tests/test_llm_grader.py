@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from openai import OpenAIError
 
-from skill_eval.graders import LLMGrader
+from agent_skill_eval.graders import LLMGrader
 
 
 class TestLLMGraderClient:

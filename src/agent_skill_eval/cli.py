@@ -13,19 +13,19 @@ from rich.table import Table
 
 load_dotenv()
 
-from skill_eval import __version__  # noqa: E402
-from skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
-from skill_eval.models import AgentType, CleanupManifest, EvalSuite  # noqa: E402
-from skill_eval.runner import EvalRunner  # noqa: E402
+from agent_skill_eval import __version__  # noqa: E402
+from agent_skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
+from agent_skill_eval.models import AgentType, CleanupManifest, EvalSuite  # noqa: E402
+from agent_skill_eval.runner import EvalRunner  # noqa: E402
 
 
 def _version_callback(value: bool) -> None:
     if value:
-        console.print(f"skill-eval {__version__}")
+        console.print(f"agent-skill-eval {__version__}")
         raise typer.Exit()
 
 
-app = typer.Typer(name="skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake")
+app = typer.Typer(name="agent-skill-eval", help="Evaluate agent skills across OpenCode, Claude Code, Codex, and Fake")
 console = Console()
 AGENT_CHOICES = ", ".join(t.value for t in AgentType)
 
@@ -85,10 +85,10 @@ def run(
     ),
     runs: int = typer.Option(1, "--runs", "-n", help="Number of runs per (eval, agent, config) for pass@k stats"),
     agent_timeout: Optional[int] = typer.Option(
-        None, "--timeout", help="Per-run agent timeout in seconds (default 600, env SKILL_EVAL_AGENT_TIMEOUT)"
+        None, "--timeout", help="Per-run agent timeout in seconds (default 600, env ASE_AGENT_TIMEOUT)"
     ),
     agent_retries: Optional[int] = typer.Option(
-        None, "--retries", help="Retries on agent timeout/non-zero exit (default 1, env SKILL_EVAL_AGENT_RETRIES)"
+        None, "--retries", help="Retries on agent timeout/non-zero exit (default 1, env ASE_AGENT_RETRIES)"
     ),
 ):
     """Run skill evaluations."""
@@ -109,7 +109,7 @@ def run(
 
     agent_model_map = _parse_agent_models(agent_models, agent_types)
 
-    from skill_eval.skills import SkillInstaller
+    from agent_skill_eval.skills import SkillInstaller
 
     try:
         for problem in SkillInstaller(skill).frontmatter_problems():
@@ -184,7 +184,7 @@ def _cleanup_iteration(iteration_dir: Path, workspace_base: Path) -> None:
 
     Reads ``cleanup.json`` from the iteration dir. If the manifest is missing,
     we do NOT touch remote state (no "delete all branches" or "close all PRs"
-    inference). We also do NOT glob-delete unrecorded ``skill-eval-*``
+    inference). We also do NOT glob-delete unrecorded ``agent-skill-eval-*``
     workspaces under the workspace base, because those may belong to other
     runs or manual debugging. The only workspaces removed are those listed
     in the manifest.
@@ -344,7 +344,7 @@ def grade(
     if not meta_path.exists():
         console.print(
             f"[red]No evals_meta.json in {workspace}. Cannot determine assertions. "
-            f"Re-run 'skill-eval run' to generate it.[/red]"
+            f"Re-run 'agent-skill-eval run' to generate it.[/red]"
         )
         raise typer.Exit(1)
 
@@ -402,7 +402,7 @@ def grade(
                 updated += 1
 
     if recompute_benchmark:
-        from skill_eval.runner import compute_benchmark
+        from agent_skill_eval.runner import compute_benchmark
 
         results = _collect_results(workspace)
         agents = sorted({r.get("agent") for r in results.values() if r.get("agent") and r.get("agent") != "unknown"})
@@ -414,9 +414,7 @@ def grade(
             json.dump(benchmark.model_dump(), f, indent=2)
         console.print("[green]benchmark.json recomputed[/green]")
     else:
-        console.print(
-            "[yellow]benchmark.json NOT recomputed. Re-run 'skill-eval run' or pass --recompute-benchmark.[/yellow]"
-        )
+        console.print("[yellow]benchmark.json NOT recomputed. Re-run 'ase run' or pass --recompute-benchmark.[/yellow]")
 
     console.print(f"[green]Re-grading complete! Updated {updated} grading file(s).[/green]")
 

@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
 
-from skill_eval.models import AgentType, TimingData
+from agent_skill_eval.models import AgentType, TimingData
 
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 1
@@ -31,9 +31,9 @@ class AgentHarness(ABC):
         self.workspace = workspace
         self.model = model
         self.base_url = base_url
-        self.timeout = timeout or int(os.environ.get("SKILL_EVAL_AGENT_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+        self.timeout = timeout or int(os.environ.get("ASE_AGENT_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
         if max_retries is None:
-            max_retries = int(os.environ.get("SKILL_EVAL_AGENT_RETRIES", DEFAULT_MAX_RETRIES))
+            max_retries = int(os.environ.get("ASE_AGENT_RETRIES", DEFAULT_MAX_RETRIES))
         self.max_retries = max_retries
 
     @abstractmethod
@@ -121,7 +121,7 @@ class AgentHarness(ABC):
             except subprocess.TimeoutExpired as e:
                 stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
                 stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-                stderr += f"\n[skill-eval] agent timed out after {self.timeout}s (attempt {attempt + 1}/{attempts})"
+                stderr += f"\n[agent-skill-eval] timed out after {self.timeout}s (attempt {attempt + 1}/{attempts})"
                 exit_code = None
                 timed_out = True
 
@@ -130,7 +130,7 @@ class AgentHarness(ABC):
             # graded union of both attempts.
             if attempt < attempts - 1 and fingerprint_before is not None:
                 if self._workspace_fingerprint() != fingerprint_before:
-                    stderr += "\n[skill-eval] not retrying: the failed attempt modified the workspace"
+                    stderr += "\n[agent-skill-eval] not retrying: the failed attempt modified the workspace"
                     break
 
         duration_ms = int((time.time() - start) * 1000)
