@@ -6,6 +6,52 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.6.0 (2026-06-12)
+
+### Bug Fixes
+
+- Harden subprocess decoding and null-safe artifact reads (review feedback)
+  ([`4680b8e`](https://github.com/tardigrde/agent-skill-eval/commit/4680b8e62f8af705d1ba13a46723a7f7f07d4726))
+
+- errors="replace" on all subprocess output decoding (hooks, agent run, CLI version probe) so
+  non-UTF-8 output can't crash the harness - treat present-but-null JSON fields as defaults in
+  summary token totals and the status command - reject a directory passed as --pricing-config
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Documentation
+
+- Add ROADMAP.md with planned harness improvements
+  ([`4e50954`](https://github.com/tardigrde/agent-skill-eval/commit/4e50954f4737dd09f274407a93ac55a4592968fe))
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+### Features
+
+- **harness**: Real-world feedback batch — targeted runs, budgets, hooks, observability
+  ([`4641623`](https://github.com/tardigrde/agent-skill-eval/commit/4641623be07a8778a5b3b99fa3dc06766c431791))
+
+Implements the confirmed work items from evaluating a live side-effect skill (commit/push/MR
+  workflow) with this harness:
+
+- --eval-id on run and validate: filter the suite before task creation, so all artifacts describe
+  only the selected cases; unknown ids fail fast before any model call - per-case budget guards
+  (--max-input/non-cached-input/output/total/ reasoning-tokens-per-case, --max-cost-per-case,
+  --max-duration-per-case) with warn|fail|stop-suite actions, checked post-run - lifecycle hooks:
+  --pre-run-command (aborts suite on failure before any model call), --post-grade-command (stdout
+  JSON merges into grading.json), --post-run-command; all receive structured ASE_* env metadata -
+  live progress lines plus progress.jsonl per-run event stream - summary.json per iteration plus
+  `status` command; report --failures-only - cost semantics: cost_usd null means unavailable (not
+  $0), cost_usd_source tracking, --pricing-config for CLIs that report no cost, OpenRouter
+  reconciliation for claude-code, cached vs non-cached input split - reasoning token persistence
+  (codex turn.completed, opencode step_finish); null means unreported, not zero - --reasoning-effort
+  passed through to codex (model_reasoning_effort); unsupported agents warn and record null -
+  run_meta.json records effective config: model, reasoning effort, base URL, agent CLI version,
+  harness version
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.5.0 (2026-06-11)
 
 ### Bug Fixes
