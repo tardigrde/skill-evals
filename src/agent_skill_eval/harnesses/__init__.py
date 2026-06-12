@@ -66,8 +66,9 @@ class AgentHarness(ABC):
     def non_cached_input_tokens(self, timing: TimingData) -> int:
         """Input tokens billed at the non-cached rate.
 
-        Most CLIs (codex, opencode) report input_tokens INCLUDING cache
-        reads; claude-code reports them separately and overrides this.
+        Default for CLIs that report input_tokens INCLUDING cache reads
+        (codex); claude-code and opencode report them separately and
+        override this.
         """
         return max(timing.input_tokens - timing.cached_tokens, 0)
 
@@ -245,6 +246,13 @@ class OpenCodeHarness(AgentHarness):
             cmd.extend(["--model", self.model])
         cmd.append(prompt)
         return cmd
+
+    def non_cached_input_tokens(self, timing: TimingData) -> int:
+        # OpenCode reports input tokens EXCLUDING cache reads (like
+        # claude-code): live runs show cached consistently larger than input,
+        # which is impossible if input contained the cache reads. The base
+        # class subtraction would clamp this to a bogus 0.
+        return timing.input_tokens
 
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
         timing = TimingData()

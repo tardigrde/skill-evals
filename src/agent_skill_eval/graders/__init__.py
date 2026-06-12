@@ -704,59 +704,30 @@ class LLMGrader:
         file_listing = self._list_workspace_files(workspace)
         file_contents = self._read_workspace_files(workspace)
 
-        prompt = f"""You are grading an AI agent's output against specific assertions.
-
-## Expected Output
-{expected_output}
-
-## Agent's Actual Output
-{agent_output}
-
-## Workspace Files
-{file_listing}
-
-## Workspace File Contents
-{file_contents}
-
-## Assertions to Grade
-{chr(10).join(f"{i + 1}. {a}" for i, a in enumerate(assertions))}
-
-For each assertion, respond with JSON:
-{{
-  "results": [
-    {{"text": "<assertion text>", "passed": true/false, "evidence": "<specific evidence from output>"}}
-  ]
-}}
-
-Be strict: only mark PASS if there is clear evidence. Quote the output or file contents in evidence."""
-
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0,
+            results, missing = self._grade_attempt(
+                assertions, agent_output, expected_output, file_listing, file_contents
             )
-            data = json.loads(response.choices[0].message.content)
-            results = []
-            returned_texts = set()
-            for r in data.get("results", []):
-                results.append(
-                    AssertionResult(
-                        text=r["text"],
-                        passed=r["passed"],
-                        evidence=r["evidence"],
-                        method="llm",
-                    )
-                )
-                returned_texts.add(_normalize_assertion_text(r["text"]))
-            missing = [a for a in assertions if _normalize_assertion_text(a) not in returned_texts]
             if missing:
-                # The grader dropping an assertion is a grader failure, not an
-                # agent failure: skip it so it doesn't drag down the pass rate.
+                # The judge sometimes drops an assertion from its JSON answer.
+                # That is grader noise, not agent behavior: one retry with only
+                # the dropped assertions recovers most of these.
                 console.print(
-                    f"[yellow]Warning: LLM grader returned no result for {len(missing)} assertion(s); "
-                    f"skipped (not failed)[/yellow]"
+                    f"[yellow]LLM grader returned no result for {len(missing)} assertion(s); retrying those[/yellow]"
+                )
+                try:
+                    retry_results, missing = self._grade_attempt(
+                        missing, agent_output, expected_output, file_listing, file_contents
+                    )
+                    results.extend(retry_results)
+                except Exception as e:
+                    console.print(f"[yellow]Warning: LLM grader retry failed ({e})[/yellow]")
+            if missing:
+                # Still no result after the retry: a grader failure is not an
+                # agent failure, so skip rather than drag down the pass rate.
+                console.print(
+                    f"[yellow]Warning: LLM grader returned no result for {len(missing)} assertion(s) "
+                    f"after retry; skipped (not failed)[/yellow]"
                 )
             for a in missing:
                 results.append(
@@ -786,6 +757,81 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
                 )
                 for a in assertions
             ]
+
+    def _grade_attempt(
+        self,
+        assertions: list[str],
+        agent_output: str,
+        expected_output: str,
+        file_listing: str,
+        file_contents: str,
+    ) -> tuple[list[AssertionResult], list[str]]:
+        """One judge call over ``assertions``.
+
+        Returns (results for the assertions the judge answered, assertions
+        it dropped from its answer). Raises on API/parse errors.
+        """
+        prompt = f"""You are grading an AI agent's output against specific assertions.
+
+## Expected Output
+{expected_output}
+
+## Agent's Actual Output
+{agent_output}
+
+## Workspace Files
+{file_listing}
+
+## Workspace File Contents
+{file_contents}
+
+## Assertions to Grade
+{chr(10).join(f"{i + 1}. {a}" for i, a in enumerate(assertions))}
+
+For each assertion, respond with JSON:
+{{
+  "results": [
+    {{"text": "<assertion text>", "passed": true/false, "evidence": "<specific evidence from output>"}}
+  ]
+}}
+
+Be strict: only mark PASS if there is clear evidence. Quote the output or file contents in evidence."""
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        data = json.loads(response.choices[0].message.content)
+        if not isinstance(data, dict):
+            return [], assertions
+        # Only keep results that answer a requested assertion, once each:
+        # judges sometimes return extra, duplicated, malformed, or unrelated
+        # rows. A bad row only loses that row — its assertion goes into
+        # ``missing`` for the retry instead of failing the whole attempt.
+        requested = {_normalize_assertion_text(a) for a in assertions}
+        results = []
+        answered: set[str] = set()
+        raw_results = data.get("results")
+        for r in raw_results if isinstance(raw_results, list) else []:
+            malformed = not isinstance(r, dict) or not isinstance(r.get("text"), str) or "passed" not in r
+            if malformed or "evidence" not in r:
+                continue
+            key = _normalize_assertion_text(r["text"])
+            if key not in requested or key in answered:
+                continue
+            results.append(
+                AssertionResult(
+                    text=r["text"],
+                    passed=r["passed"],
+                    evidence=r["evidence"],
+                    method="llm",
+                )
+            )
+            answered.add(key)
+        missing = [a for a in assertions if _normalize_assertion_text(a) not in answered]
+        return results, missing
 
     # Skill-install and VCS dirs: listing them would leak the skill text into
     # the judge's context and drown out the agent's actual artifacts.
