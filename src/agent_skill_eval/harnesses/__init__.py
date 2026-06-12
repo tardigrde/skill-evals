@@ -15,10 +15,21 @@ DEFAULT_MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 2.0
 
 
+def _rate(entry: dict, field: str) -> float:
+    try:
+        return float(entry.get(field) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class AgentHarness(ABC):
     agent_type: AgentType
     # Environment variable each agent CLI reads its API base URL from.
     base_url_env: Optional[str] = None
+    # Command that prints the agent CLI's version (None = no probe).
+    version_command: Optional[list[str]] = None
+    # Whether build_command can pass --reasoning-effort through to the CLI.
+    supports_reasoning_effort: bool = False
 
     def __init__(
         self,
@@ -27,14 +38,22 @@ class AgentHarness(ABC):
         base_url: Optional[str] = None,
         timeout: Optional[int] = None,
         max_retries: Optional[int] = None,
+        pricing: Optional[dict[str, dict]] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.workspace = workspace
         self.model = model
         self.base_url = base_url
+        # Only meaningful when supports_reasoning_effort; callers should
+        # treat the effective value as None for harnesses that ignore it.
+        self.reasoning_effort = reasoning_effort if self.supports_reasoning_effort else None
         self.timeout = timeout or int(os.environ.get("ASE_AGENT_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
         if max_retries is None:
             max_retries = int(os.environ.get("ASE_AGENT_RETRIES", DEFAULT_MAX_RETRIES))
         self.max_retries = max_retries
+        # User-provided model -> rate map (--pricing-config), used to compute
+        # cost_usd when the CLI itself reports nothing.
+        self.pricing = pricing or {}
 
     @abstractmethod
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
@@ -44,10 +63,48 @@ class AgentHarness(ABC):
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
         pass
 
+    def non_cached_input_tokens(self, timing: TimingData) -> int:
+        """Input tokens billed at the non-cached rate.
+
+        Most CLIs (codex, opencode) report input_tokens INCLUDING cache
+        reads; claude-code reports them separately and overrides this.
+        """
+        return max(timing.input_tokens - timing.cached_tokens, 0)
+
+    def _cost_from_pricing_config(self, timing: TimingData) -> Optional[float]:
+        """Compute cost from a user-provided --pricing-config, or None.
+
+        Rates are USD per token (same semantics as OpenRouter's pricing
+        fields): prompt, completion, input_cache_read, input_cache_write.
+        Matched by exact model string.
+        """
+        if not self.model or self.model not in self.pricing:
+            return None
+        if timing.total_tokens <= 0 and timing.cached_tokens <= 0 and timing.cache_creation_tokens <= 0:
+            return None
+        entry = self.pricing[self.model]
+        prompt = _rate(entry, "prompt")
+        completion = _rate(entry, "completion")
+        if prompt <= 0 and completion <= 0:
+            return None
+        cache_read = _rate(entry, "input_cache_read") or prompt
+        return (
+            self.non_cached_input_tokens(timing) * prompt
+            + timing.cached_tokens * cache_read
+            + timing.output_tokens * completion
+            + timing.cache_creation_tokens * _rate(entry, "input_cache_write")
+        )
+
     def finalize_timing(self, timing: TimingData) -> None:
         """Post-process timing after a run (e.g. cost reconciliation)."""
-        if timing.cost_usd and timing.cost_usd_source is None:
+        if timing.cost_usd is not None and timing.cost_usd_source is None:
             timing.cost_usd_source = "cli"
+            return
+        if timing.cost_usd is None:
+            computed = self._cost_from_pricing_config(timing)
+            if computed is not None:
+                timing.cost_usd = computed
+                timing.cost_usd_source = "pricing-config"
 
     def _build_env(self) -> Optional[dict[str, str]]:
         if self.base_url and self.base_url_env:
@@ -114,6 +171,7 @@ class AgentHarness(ABC):
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
+                    errors="replace",
                     timeout=self.timeout,
                     env=env,
                 )
@@ -124,8 +182,16 @@ class AgentHarness(ABC):
                 if result.returncode == 0:
                     break
             except subprocess.TimeoutExpired as e:
-                stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-                stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+                stdout = (
+                    (e.stdout or b"").decode("utf-8", errors="replace")
+                    if isinstance(e.stdout, bytes)
+                    else (e.stdout or "")
+                )
+                stderr = (
+                    (e.stderr or b"").decode("utf-8", errors="replace")
+                    if isinstance(e.stderr, bytes)
+                    else (e.stderr or "")
+                )
                 stderr += f"\n[agent-skill-eval] timed out after {self.timeout}s (attempt {attempt + 1}/{attempts})"
                 exit_code = None
                 timed_out = True
@@ -146,6 +212,10 @@ class AgentHarness(ABC):
         timing.exit_code = exit_code
         timing.timed_out = timed_out
         timing.retries = retries_used
+        # Persist the billable input split using this harness's semantics;
+        # downstream readers must not re-derive it (codex/opencode include
+        # cache reads in input_tokens, claude-code does not).
+        timing.non_cached_input_tokens = self.non_cached_input_tokens(timing)
         self.finalize_timing(timing)
 
         with open(output_dir / "stdout.log", "w", encoding="utf-8") as f:
@@ -159,6 +229,7 @@ class AgentHarness(ABC):
 class OpenCodeHarness(AgentHarness):
     agent_type = AgentType.OPENCODE
     base_url_env = "OPENAI_BASE_URL"
+    version_command = ["opencode", "--version"]
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -178,6 +249,9 @@ class OpenCodeHarness(AgentHarness):
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
         timing = TimingData()
         messages = []
+        # None until at least one step reports a cost field: a run whose
+        # steps never report cost is "cost unavailable", not a free run.
+        cost: Optional[float] = None
 
         for line in stdout.strip().split("\n"):
             if not line.strip():
@@ -199,11 +273,20 @@ class OpenCodeHarness(AgentHarness):
                     timing.output_tokens += tokens.get("output", 0)
                     cache = tokens.get("cache", {})
                     timing.cached_tokens += cache.get("read", 0)
-                    timing.cost_usd += part.get("cost", 0) or 0
+                    # Only set when a step actually reports the field: a run
+                    # with no reasoning telemetry stays None (unknown), which
+                    # is not the same as reasoning=0.
+                    if "reasoning" in tokens:
+                        timing.reasoning_output_tokens = (timing.reasoning_output_tokens or 0) + (
+                            tokens.get("reasoning") or 0
+                        )
+                    if "cost" in part:
+                        cost = (cost or 0.0) + (part.get("cost") or 0)
 
             except json.JSONDecodeError:
                 continue
 
+        timing.cost_usd = cost
         timing.total_tokens = timing.input_tokens + timing.output_tokens
         return "\n".join(messages), timing
 
@@ -211,6 +294,7 @@ class OpenCodeHarness(AgentHarness):
 class ClaudeCodeHarness(AgentHarness):
     agent_type = AgentType.CLAUDE_CODE
     base_url_env = "ANTHROPIC_BASE_URL"
+    version_command = ["claude", "--version"]
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -238,7 +322,8 @@ class ClaudeCodeHarness(AgentHarness):
                 timing.output_tokens = usage.get("output_tokens", 0)
                 timing.cached_tokens = usage.get("cache_read_input_tokens", 0)
                 timing.cache_creation_tokens = usage.get("cache_creation_input_tokens", 0)
-                timing.cost_usd = data.get("total_cost_usd", 0.0) or 0.0
+                raw_cost = data.get("total_cost_usd")
+                timing.cost_usd = float(raw_cost) if raw_cost is not None else None
                 timing.total_tokens = timing.input_tokens + timing.output_tokens
                 duration_s = data.get("duration_ms", 0)
                 if duration_s:
@@ -267,16 +352,27 @@ class ClaudeCodeHarness(AgentHarness):
 
         reconciled = reconcile_claude_cost(timing, self.model)
         if reconciled is None:
-            timing.cost_usd_source = "cli-unreconciled"
+            if timing.cost_usd is None:
+                # The CLI reported no cost either: fall back to the generic
+                # path (pricing config, or genuinely unavailable).
+                super().finalize_timing(timing)
+            else:
+                timing.cost_usd_source = "cli-unreconciled"
             return
         timing.cost_usd_cli = timing.cost_usd
         timing.cost_usd = reconciled
         timing.cost_usd_source = "openrouter-pricing"
 
+    def non_cached_input_tokens(self, timing: TimingData) -> int:
+        # Anthropic usage reports input_tokens EXCLUDING cache reads.
+        return timing.input_tokens
+
 
 class CodexHarness(AgentHarness):
     agent_type = AgentType.CODEX
     base_url_env = "OPENAI_BASE_URL"
+    version_command = ["codex", "--version"]
+    supports_reasoning_effort = True
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
         cmd = [
@@ -291,6 +387,11 @@ class CodexHarness(AgentHarness):
         ]
         if self.model:
             cmd.extend(["--model", self.model])
+        if self.reasoning_effort:
+            # Without this, codex silently inherits model_reasoning_effort
+            # from ~/.codex/config.toml — two users running the "same" eval
+            # can benchmark different reasoning settings.
+            cmd.extend(["-c", f'model_reasoning_effort="{self.reasoning_effort}"'])
         cmd.append(prompt)
         return cmd
 
@@ -315,6 +416,12 @@ class CodexHarness(AgentHarness):
                     timing.input_tokens += usage.get("input_tokens", 0)
                     timing.output_tokens += usage.get("output_tokens", 0)
                     timing.cached_tokens += usage.get("cached_input_tokens", 0)
+                    # Only set when the turn reports the field; absent
+                    # telemetry stays None (unknown), not 0.
+                    if "reasoning_output_tokens" in usage:
+                        timing.reasoning_output_tokens = (timing.reasoning_output_tokens or 0) + (
+                            usage.get("reasoning_output_tokens") or 0
+                        )
 
             except json.JSONDecodeError:
                 continue
@@ -330,7 +437,9 @@ class FakeHarness(AgentHarness):
         return ["fake-agent", prompt]
 
     def parse_output(self, stdout: str, stderr: str) -> tuple[str, TimingData]:
-        timing = TimingData(total_tokens=1, input_tokens=1, duration_ms=1)
+        # The fake agent makes no API calls, so its cost is a real 0.0
+        # (known-free), not an unavailable None.
+        timing = TimingData(total_tokens=1, input_tokens=1, duration_ms=1, cost_usd=0.0)
         return stdout, timing
 
     def run(self, prompt: str, output_dir: Path) -> tuple[str, TimingData, str, str]:
@@ -344,8 +453,9 @@ class FakeHarness(AgentHarness):
         stdout = final_output
         stderr = ""
         timing = TimingData(
-            total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1, exit_code=0
+            total_tokens=1, input_tokens=1, output_tokens=0, cached_tokens=0, duration_ms=1, exit_code=0, cost_usd=0.0
         )
+        timing.non_cached_input_tokens = self.non_cached_input_tokens(timing)
 
         with open(output_dir / "stdout.log", "w", encoding="utf-8") as f:
             f.write(stdout)
@@ -370,6 +480,38 @@ def get_harness(
     base_url: Optional[str] = None,
     timeout: Optional[int] = None,
     max_retries: Optional[int] = None,
+    pricing: Optional[dict[str, dict]] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> AgentHarness:
     cls = HARNESSES[agent_type]
-    return cls(workspace, model, base_url=base_url, timeout=timeout, max_retries=max_retries)
+    return cls(
+        workspace,
+        model,
+        base_url=base_url,
+        timeout=timeout,
+        max_retries=max_retries,
+        pricing=pricing,
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def get_cli_version(agent_type: AgentType) -> Optional[str]:
+    """Best-effort agent CLI version (first line of ``<cli> --version``).
+
+    Recorded in run_meta.json so a result can be tied to the exact agent
+    binary that produced it. None when the agent has no version command or
+    the probe fails — never raises.
+    """
+    command = HARNESSES[agent_type].version_command
+    if not command:
+        return None
+    try:
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    first_line = (result.stdout or "").strip().splitlines()
+    return first_line[0].strip() if first_line else None

@@ -4,29 +4,40 @@ import json
 import os
 import statistics
 import subprocess
+import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from agent_skill_eval import __version__
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug
-from agent_skill_eval.graders import LLMGrader, grade_assertions
-from agent_skill_eval.harnesses import get_harness
+from agent_skill_eval.graders import LLMGrader, grade_assertions, summarize_assertion_results
+from agent_skill_eval.harnesses import HARNESSES, get_cli_version, get_harness
+from agent_skill_eval.hooks import apply_post_grade_hooks, run_suite_hooks
 from agent_skill_eval.models import (
     AgentType,
+    AssertionResult,
     BenchmarkResult,
     BenchmarkStats,
+    BudgetConfig,
     CleanupManifest,
     DeltaStats,
     EvalCase,
     EvalSuite,
+    GradingResult,
     RunMeta,
     StatsPair,
+    TimingData,
 )
+from agent_skill_eval.progress import ProgressLog, format_tokens, run_label
 from agent_skill_eval.skills import SkillInstaller
+from agent_skill_eval.summary import build_run_summary, write_run_summary
 from agent_skill_eval.workspace import WorkspaceManager
 
 console = Console()
@@ -49,6 +60,13 @@ class EvalRunner:
         agent_timeout: Optional[int] = None,
         agent_max_retries: Optional[int] = None,
         runs: int = 1,
+        eval_ids: Optional[list[str]] = None,
+        budget: Optional[BudgetConfig] = None,
+        pricing: Optional[dict[str, dict]] = None,
+        pre_run_commands: Optional[list[str]] = None,
+        post_grade_commands: Optional[list[str]] = None,
+        post_run_commands: Optional[list[str]] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.skill_path = skill_path
         self.evals_path = evals_path
@@ -64,23 +82,60 @@ class EvalRunner:
         self.agent_timeout = agent_timeout
         self.agent_max_retries = agent_max_retries
         self.runs = max(1, runs)
+        self.eval_ids = [str(e) for e in eval_ids] if eval_ids else []
+        self.budget = budget if budget and budget.enabled else None
+        self.pricing = pricing or {}
+        self.pre_run_commands = pre_run_commands or []
+        self.post_grade_commands = post_grade_commands or []
+        self.post_run_commands = post_run_commands or []
+        self.reasoning_effort = reasoning_effort
 
         self.run_id = uuid.uuid4().hex[:8]
+        # One version probe per agent for the whole suite; recorded in every
+        # run_meta.json so results are attributable to an exact CLI build.
+        self._cli_versions: dict[AgentType, Optional[str]] = {a: get_cli_version(a) for a in self.agents}
         self.suite = self._load_suite()
         self.skill_installer = SkillInstaller(skill_path)
         self.workspace_mgr = WorkspaceManager(workspace_base, source_repo=source_repo)
         self.llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url) if grader_model else None
 
+        # Set when a budget violation with action=stop-suite fires; runs
+        # that have not started yet short-circuit to "skipped".
+        self._stop_suite = threading.Event()
+        self._stop_reason: Optional[str] = None
+        self._progress: Optional[ProgressLog] = None
+
     def _load_suite(self) -> EvalSuite:
         with open(self.evals_path, encoding="utf-8") as f:
             data = json.load(f)
-        return EvalSuite(**data)
+        # Filter once, before tasks or metadata exist, so every downstream
+        # artifact (evals_meta.json, workspaces, benchmark) naturally
+        # describes only the selected cases.
+        return EvalSuite(**data).filtered_by_ids(self.eval_ids)
 
     def run(self, iteration: int = 1) -> Path:
+        started = time.time()
         iteration_dir = self.workspace_base / f"{self.suite.skill_name}-workspace" / f"iteration-{iteration}"
         iteration_dir.mkdir(parents=True, exist_ok=True)
 
         self._save_eval_metadata(iteration_dir)
+        self._progress = ProgressLog(iteration_dir / "progress.jsonl")
+
+        if self.reasoning_effort:
+            unsupported = [a.value for a in self.agents if not HARNESSES[a].supports_reasoning_effort]
+            if unsupported:
+                console.print(
+                    f"[yellow]Warning: --reasoning-effort is not supported by {', '.join(unsupported)}; "
+                    f"those agents run on their own local defaults (run_meta.json records null)[/yellow]"
+                )
+
+        hook_env = self._suite_hook_env(iteration_dir, iteration)
+        hook_records: dict[str, list[dict]] = {"pre_run": [], "post_run": []}
+        if self.pre_run_commands:
+            console.print(f"[cyan]Running {len(self.pre_run_commands)} pre-run hook(s)...[/cyan]")
+            # A failing pre-run hook raises HookError here, before any
+            # model call or workspace mutation.
+            hook_records["pre_run"] = run_suite_hooks(self.pre_run_commands, hook_env, label="pre-run", fail_fast=True)
 
         tasks = []
         for eval_case in self.suite.evals:
@@ -89,6 +144,16 @@ class EvalRunner:
                     tasks.append((eval_case, agent_type, True, run_index))
                     if self.with_baseline:
                         tasks.append((eval_case, agent_type, False, run_index))
+
+        self._progress.emit(
+            "suite_started",
+            skill=self.suite.skill_name,
+            iteration=iteration,
+            run_id=self.run_id,
+            total_runs=len(tasks),
+            eval_ids=[str(e.id) for e in self.suite.evals],
+            agents=[a.value for a in self.agents],
+        )
 
         results: dict[str, dict] = {}
         cleanup_entries: list[CleanupManifest] = []
@@ -116,18 +181,29 @@ class EvalRunner:
                     )
                     futures[future] = (eval_case, agent_type, with_skill, run_index)
 
-            for future in as_completed(futures):
-                eval_case, agent_type, with_skill, run_index = futures[future]
-                key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}-r{run_index}"
-                try:
-                    result = future.result()
-                    results[key] = result["summary"]
-                    if result.get("cleanup_entry"):
-                        cleanup_entries.append(result["cleanup_entry"])
-                except Exception as e:
-                    console.print(f"[red]Error running {key}: {e}[/red]")
-                    results[key] = {"error": str(e)}
-                progress.advance(task_id)
+                # Inside the executor block on purpose: collecting results
+                # as they complete keeps the progress bar and progress.jsonl
+                # live instead of only updating after every run finished.
+                for future in as_completed(futures):
+                    eval_case, agent_type, with_skill, run_index = futures[future]
+                    key = f"{eval_case.id}-{agent_type.value}-{'with' if with_skill else 'without'}-r{run_index}"
+                    try:
+                        result = future.result()
+                        results[key] = result["summary"]
+                        if result.get("cleanup_entry"):
+                            cleanup_entries.append(result["cleanup_entry"])
+                    except Exception as e:
+                        console.print(f"[red]Error running {key}: {e}[/red]")
+                        results[key] = {"error": str(e)}
+                        self._progress.emit(
+                            "run_error",
+                            eval_id=str(eval_case.id),
+                            agent=agent_type.value,
+                            with_skill=with_skill,
+                            run_index=run_index,
+                            error=str(e),
+                        )
+                    progress.advance(task_id)
 
         benchmark = self._compute_benchmark(results, iteration_dir)
 
@@ -146,6 +222,46 @@ class EvalRunner:
         with open(iteration_dir / "cleanup.json", "w", encoding="utf-8") as f:
             json.dump(manifest.model_dump(exclude_none=True), f, indent=2)
 
+        if self.post_run_commands:
+            console.print(f"[cyan]Running {len(self.post_run_commands)} post-run hook(s)...[/cyan]")
+            hook_records["post_run"] = run_suite_hooks(
+                self.post_run_commands, hook_env, label="post-run", fail_fast=False
+            )
+            for record in hook_records["post_run"]:
+                if record["exit_code"] != 0:
+                    console.print(
+                        f"[yellow]post-run hook failed (exit {record['exit_code']}): {record['command']}[/yellow]"
+                    )
+
+        summary = build_run_summary(
+            skill_name=self.suite.skill_name,
+            iteration=iteration,
+            run_id=self.run_id,
+            agents=[a.value for a in self.agents],
+            eval_ids=[str(e.id) for e in self.suite.evals],
+            runs=self.runs,
+            with_baseline=self.with_baseline,
+            duration_seconds=time.time() - started,
+            results=results,
+            benchmark=benchmark.model_dump(),
+            cleanup=manifest.model_dump(exclude_none=True),
+            budget=self.budget.model_dump() if self.budget else None,
+            hooks=hook_records,
+        )
+        write_run_summary(iteration_dir, summary)
+
+        self._progress.emit(
+            "suite_finished",
+            total_runs=len(tasks),
+            completed=summary["runs_completed"],
+            failed_grading=summary["runs_failed_grading"],
+            errors=len(summary["errors"]),
+            skipped=len(summary["skipped_runs"]),
+        )
+
+        if self._stop_suite.is_set():
+            console.print(f"[yellow]Suite stopped early by budget: {self._stop_reason}[/yellow]")
+
         console.print(f"\n[green]Results saved to {iteration_dir}[/green]")
         return iteration_dir
 
@@ -154,9 +270,26 @@ class EvalRunner:
             "skill_name": self.suite.skill_name,
             "evals": [eval_case.model_dump() for eval_case in self.suite.evals],
             "source_repo": self.source_repo,
+            # The case filter actually applied (--eval-id); empty means the
+            # full suite ran. report/compare readers can tell filtered runs
+            # apart without diffing the evals list.
+            "selected_eval_ids": self.eval_ids,
         }
         with open(iteration_dir / "evals_meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
+
+    def _suite_hook_env(self, iteration_dir: Path, iteration: int) -> dict[str, str]:
+        return {
+            "ASE_SKILL_NAME": self.suite.skill_name,
+            "ASE_SKILL_DIR": str(self.skill_path),
+            "ASE_EVALS_PATH": str(self.evals_path),
+            "ASE_ITERATION": str(iteration),
+            "ASE_ITERATION_DIR": str(iteration_dir),
+            "ASE_WORKSPACE_BASE": str(self.workspace_base),
+            "ASE_SOURCE_REPO": self.source_repo or "",
+            "ASE_RUN_ID": self.run_id,
+            "ASE_EVAL_IDS": ",".join(str(e.id) for e in self.suite.evals),
+        }
 
     def _build_cleanup_manifest(self, entries: list[CleanupManifest], iteration_dir: Path) -> CleanupManifest:
         all_branches: list[str] = []
@@ -177,6 +310,10 @@ class EvalRunner:
             workspaces=[str(p) for p in self.workspace_mgr.workspaces],
         )
 
+    def _emit(self, event: str, **fields) -> None:
+        if self._progress is not None:
+            self._progress.emit(event, **fields)
+
     def _run_single(
         self,
         eval_case: EvalCase,
@@ -186,6 +323,34 @@ class EvalRunner:
         iteration: int = 1,
         run_index: int = 1,
     ) -> dict:
+        label = run_label(eval_case.id, agent_type.value, with_skill, run_index, self.runs)
+        identity = {
+            "eval_id": str(eval_case.id),
+            "agent": agent_type.value,
+            "with_skill": with_skill,
+            "run_index": run_index,
+        }
+
+        if self._stop_suite.is_set():
+            reason = f"skipped: {self._stop_reason or 'suite stopped by budget'}"
+            console.print(f"  [yellow]{escape(f'[{label}]')} {reason}[/yellow]")
+            self._emit("run_skipped", **identity, reason=reason)
+            return {
+                "summary": {
+                    "eval_id": eval_case.id,
+                    "agent": agent_type.value,
+                    "with_skill": with_skill,
+                    "run_index": run_index,
+                    "error": reason,
+                    "skipped": True,
+                },
+                "cleanup_entry": None,
+            }
+
+        run_started = time.time()
+        console.print(f"  [dim]{escape(f'[{label}]')} started[/dim]")
+        self._emit("run_started", **identity)
+
         eval_slug = f"eval-{eval_case.id}"
         config_slug = "with_skill" if with_skill else "without_skill"
         agent_slug = agent_type.value
@@ -226,16 +391,37 @@ class EvalRunner:
             base_url=self.harness_base_url,
             timeout=self.agent_timeout,
             max_retries=self.agent_max_retries,
+            pricing=self.pricing,
+            reasoning_effort=self.reasoning_effort,
         )
 
         prompt = self._build_prompt(eval_case, with_skill)
 
+        self._emit("snapshot_started", **identity, phase="pre")
         pre_state = capture_git_state(workspace, source_repo=self.source_repo)
         with open(output_dir / "pre_state.json", "w", encoding="utf-8") as f:
             json.dump(pre_state.model_dump(), f, indent=2)
 
+        self._emit("agent_started", **identity)
         agent_output, timing, stdout, stderr = harness.run(prompt, output_dir)
+        self._emit(
+            "agent_finished",
+            **identity,
+            duration_s=round(timing.duration_ms / 1000.0, 1),
+            input_tokens=timing.input_tokens,
+            cached_tokens=timing.cached_tokens,
+            non_cached_input_tokens=timing.non_cached_input_tokens,
+            output_tokens=timing.output_tokens,
+            reasoning_output_tokens=timing.reasoning_output_tokens,
+            total_tokens=timing.total_tokens,
+            cost_usd=timing.cost_usd,
+            exit_code=timing.exit_code,
+            timed_out=timing.timed_out,
+        )
 
+        budget_violations = self._check_budget(timing, label)
+
+        self._emit("snapshot_started", **identity, phase="post")
         post_state = capture_git_state(workspace, source_repo=self.source_repo)
         with open(output_dir / "post_state.json", "w", encoding="utf-8") as f:
             json.dump(post_state.model_dump(), f, indent=2)
@@ -256,6 +442,13 @@ class EvalRunner:
             source_repo=self.source_repo,
             run_id=self.run_id,
             run_index=run_index,
+            model=model,
+            # The value the harness actually applied: None for agents that
+            # cannot pass it through (they run on their own local defaults).
+            reasoning_effort=(self.reasoning_effort if HARNESSES[agent_type].supports_reasoning_effort else None),
+            base_url=self.harness_base_url,
+            harness_version=__version__,
+            agent_cli_version=self._cli_versions.get(agent_type),
         )
         meta_path = output_dir.parent / "run_meta.json"
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -277,12 +470,63 @@ class EvalRunner:
         with open(grading_path, "w", encoding="utf-8") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
+        if self.post_grade_commands:
+            hook_env = self._suite_hook_env(iteration_dir, iteration)
+            hook_env.update(
+                {
+                    "ASE_EVAL_ID": str(eval_case.id),
+                    "ASE_AGENT": agent_type.value,
+                    "ASE_WITH_SKILL": "1" if with_skill else "0",
+                    "ASE_RUN_INDEX": str(run_index),
+                    "ASE_WORKSPACE_PATH": str(workspace),
+                    "ASE_OUTPUT_DIR": str(output_dir),
+                    "ASE_PRE_STATE_PATH": str(output_dir / "pre_state.json"),
+                    "ASE_POST_STATE_PATH": str(output_dir / "post_state.json"),
+                    "ASE_TIMING_PATH": str(timing_path),
+                    "ASE_RUN_META_PATH": str(meta_path),
+                    "ASE_GRADING_PATH": str(grading_path),
+                }
+            )
+            grading, hook_records = apply_post_grade_hooks(self.post_grade_commands, hook_env, grading)
+            with open(output_dir / "post_grade_hooks.json", "w", encoding="utf-8") as f:
+                json.dump(hook_records, f, indent=2)
+
+        grading = self._apply_budget_verdict(grading, budget_violations)
+
+        # Rewritten when hooks or budget added results above; cheap either way.
+        with open(grading_path, "w", encoding="utf-8") as f:
+            json.dump(grading.model_dump(), f, indent=2)
+
         cleanup_entry = self._build_cleanup_entry(pre_state, post_state)
 
         if os.environ.get("ASE_KEEP_WORKSPACE"):
             console.print(f"  [dim]Workspace kept: {workspace}[/dim]")
         else:
             self.workspace_mgr.cleanup(workspace)
+
+        cost_str = f"{timing.cost_usd:.4f} USD" if timing.cost_usd is not None else "n/a"
+        reasoning_str = (
+            f" reasoning={format_tokens(timing.reasoning_output_tokens)}"
+            if timing.reasoning_output_tokens is not None
+            else ""
+        )
+        console.print(
+            f"  [dim]{escape(f'[{label}]')} finished in {time.time() - run_started:.0f}s: "
+            f"{grading.summary.passed}/{grading.summary.total} passed, "
+            f"tokens_in={format_tokens(timing.input_tokens)} "
+            f"cached={format_tokens(timing.cached_tokens)} "
+            f"out={format_tokens(timing.output_tokens)}{reasoning_str} cost={cost_str}[/dim]"
+        )
+        self._emit(
+            "run_finished",
+            **identity,
+            duration_s=round(time.time() - run_started, 1),
+            pass_rate=grading.summary.pass_rate,
+            passed=grading.summary.passed,
+            total=grading.summary.total,
+            total_tokens=timing.total_tokens,
+            budget_exceeded=timing.budget_exceeded,
+        )
 
         return {
             "summary": {
@@ -296,6 +540,48 @@ class EvalRunner:
             },
             "cleanup_entry": cleanup_entry,
         }
+
+    def _check_budget(self, timing: TimingData, label: str) -> list[str]:
+        """Evaluate per-case budgets against a finished run's timing.
+
+        Enforcement is post-run: the agent process has already exited (a
+        case that must be killed mid-run is the timeout's job). Records the
+        verdict on the timing object; "stop-suite" additionally prevents
+        any not-yet-started run from launching.
+        """
+        if not self.budget:
+            return []
+        violations = self.budget.violations(timing)
+        if not violations:
+            return []
+
+        reason = "; ".join(violations)
+        timing.budget_exceeded = True
+        timing.budget_reason = reason
+        console.print(f"  [yellow]{escape(f'[{label}]')} budget exceeded ({self.budget.action}): {reason}[/yellow]")
+        self._emit("budget_exceeded", label=label, reason=reason, action=self.budget.action)
+
+        if self.budget.action == "stop-suite" and not self._stop_suite.is_set():
+            self._stop_reason = f"budget exceeded by [{label}]: {reason}"
+            self._stop_suite.set()
+        return violations
+
+    def _apply_budget_verdict(self, grading: GradingResult, violations: list[str]) -> GradingResult:
+        """Fail the run's grading when its budget was exceeded (action != warn)."""
+        if not violations or not self.budget or self.budget.action == "warn":
+            return grading
+        all_results = list(grading.assertion_results) + [
+            AssertionResult(
+                text="The run stayed within its budget",
+                passed=False,
+                evidence="budget exceeded: " + "; ".join(violations),
+                method="budget",
+            )
+        ]
+        return GradingResult(
+            assertion_results=all_results,
+            summary=summarize_assertion_results(all_results),
+        )
 
     def _build_prompt(self, eval_case: EvalCase, with_skill: bool) -> str:
         """Build the prompt sent to the agent.
@@ -362,14 +648,15 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
             pass_rate=StatsPair(mean=0.0, stddev=0.0),
             time_seconds=StatsPair(mean=0.0, stddev=0.0),
             tokens=StatsPair(mean=0.0, stddev=0.0),
-            cost_usd=StatsPair(mean=0.0, stddev=0.0),
         )
 
     pass_rates = [r["grading"]["summary"]["pass_rate"] for r in results]
     times = [r["timing"]["duration_ms"] / 1000.0 for r in results]
     tokens = [r["timing"]["total_tokens"] for r in results]
+    # Only runs that reported a cost contribute; None means unavailable
+    # (codex without --pricing-config), which must not average in as $0.
     # .get: timing.json from runs before cost_usd existed lacks the field.
-    costs = [r["timing"].get("cost_usd", 0.0) or 0.0 for r in results]
+    costs = [c for r in results if (c := r["timing"].get("cost_usd")) is not None]
 
     full_passes = [_is_full_pass(r) for r in results]
 
@@ -395,9 +682,12 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
             stddev=statistics.stdev(tokens) if len(tokens) > 1 else 0.0,
         ),
         cost_usd=StatsPair(
-            mean=statistics.mean(costs) if costs else 0.0,
+            mean=statistics.mean(costs),
             stddev=statistics.stdev(costs) if len(costs) > 1 else 0.0,
-        ),
+        )
+        if costs
+        else None,
+        cost_runs=len(costs),
         full_pass_rate=sum(full_passes) / len(full_passes),
         pass_at_k=pass_at_k,
         k=k,
@@ -434,11 +724,14 @@ def compute_benchmark(results: dict[str, dict], agents: list[AgentType], with_ba
         if with_baseline:
             run_summary[f"{agent_type.value}_without_skill"] = without_stats
             if with_results and without_results:
+                cost_delta = None
+                if with_stats.cost_usd is not None and without_stats.cost_usd is not None:
+                    cost_delta = with_stats.cost_usd.mean - without_stats.cost_usd.mean
                 deltas[agent_type.value] = DeltaStats(
                     pass_rate=with_stats.pass_rate.mean - without_stats.pass_rate.mean,
                     time_seconds=with_stats.time_seconds.mean - without_stats.time_seconds.mean,
                     tokens=with_stats.tokens.mean - without_stats.tokens.mean,
-                    cost_usd=with_stats.cost_usd.mean - without_stats.cost_usd.mean,
+                    cost_usd=cost_delta,
                 )
 
     delta = None

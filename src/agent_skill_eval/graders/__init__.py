@@ -874,19 +874,29 @@ def grade_assertions(
     else:
         all_results = det_results
 
-    passed = sum(1 for r in all_results if r.passed)
-    skipped = sum(1 for r in all_results if r.skipped)
-    failed = sum(1 for r in all_results if not r.passed and not r.skipped)
-    total = len(all_results)
-    graded = total - skipped
-
     return GradingResult(
         assertion_results=all_results,
-        summary=GradingSummary(
-            passed=passed,
-            failed=failed,
-            total=total,
-            pass_rate=passed / graded if graded > 0 else 0.0,
-            skipped=skipped,
-        ),
+        summary=summarize_assertion_results(all_results),
+    )
+
+
+def summarize_assertion_results(results: list[AssertionResult]) -> GradingSummary:
+    """Compute a GradingSummary over assertion results.
+
+    Skipped assertions count toward ``total`` but not toward the pass rate.
+    Shared by ``grade_assertions`` and the post-grade hook path, which
+    appends hook-produced results and must recompute the summary.
+    """
+    passed = sum(1 for r in results if r.passed)
+    skipped = sum(1 for r in results if r.skipped)
+    failed = sum(1 for r in results if not r.passed and not r.skipped)
+    total = len(results)
+    graded = total - skipped
+
+    return GradingSummary(
+        passed=passed,
+        failed=failed,
+        total=total,
+        pass_rate=passed / graded if graded > 0 else 0.0,
+        skipped=skipped,
     )

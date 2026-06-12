@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_skill_eval.models import AgentType, EvalCase
+from agent_skill_eval.models import AgentType, EvalCase, TimingData
 from agent_skill_eval.runner import EvalRunner
 
 
@@ -27,7 +27,7 @@ class TestPromptConstruction:
 
             def run(self, prompt, output_dir):
                 captured_prompts.append(prompt)
-                return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
+                return "", TimingData(), "", ""
 
         with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
@@ -63,7 +63,7 @@ class TestPromptConstruction:
 
             def run(self, prompt, output_dir):
                 captured_prompts.append(prompt)
-                return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
+                return "", TimingData(), "", ""
 
         with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
@@ -104,7 +104,7 @@ class TestPromptConstruction:
 
             def run(self, prompt, output_dir):
                 captured_prompts.append(prompt)
-                return "", type("T", (), {"model_dump": lambda self: {}})(), "", ""
+                return "", TimingData(), "", ""
 
         with patch("agent_skill_eval.runner.get_harness", side_effect=FakeHarness):
             runner = EvalRunner(
@@ -155,19 +155,7 @@ class TestStateCapture:
                 )
                 return (
                     "I did the work",
-                    type(
-                        "T",
-                        (),
-                        {
-                            "model_dump": lambda self: {
-                                "total_tokens": 0,
-                                "input_tokens": 0,
-                                "output_tokens": 0,
-                                "cached_tokens": 0,
-                                "duration_ms": 0,
-                            }
-                        },
-                    )(),
+                    TimingData(),
                     "",
                     "",
                 )
@@ -650,19 +638,7 @@ class TestEvalsMetaPersistence:
         with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
-                type(
-                    "T",
-                    (),
-                    {
-                        "model_dump": lambda self: {
-                            "total_tokens": 0,
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "cached_tokens": 0,
-                            "duration_ms": 0,
-                        }
-                    },
-                )(),
+                TimingData(),
                 "",
                 "",
             )
@@ -697,19 +673,7 @@ class TestRunMetaPersistence:
         with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
-                type(
-                    "T",
-                    (),
-                    {
-                        "model_dump": lambda self: {
-                            "total_tokens": 0,
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "cached_tokens": 0,
-                            "duration_ms": 0,
-                        }
-                    },
-                )(),
+                TimingData(),
                 "",
                 "",
             )
@@ -750,19 +714,7 @@ class TestAgentDirectoryLayout:
         with patch("agent_skill_eval.runner.get_harness") as mock_harness:
             mock_harness.return_value.run.return_value = (
                 "ok",
-                type(
-                    "T",
-                    (),
-                    {
-                        "model_dump": lambda self: {
-                            "total_tokens": 0,
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "cached_tokens": 0,
-                            "duration_ms": 0,
-                        }
-                    },
-                )(),
+                TimingData(),
                 "",
                 "",
             )
