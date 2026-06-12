@@ -325,6 +325,9 @@ class TestLLMGraderGrade:
         assert "did not return" in results[1].evidence
 
     def test_missing_text_field_in_result(self, tmp_path, monkeypatch):
+        """A malformed result row is dropped (not a whole-attempt crash);
+        its assertion is retried and finally skipped, while leaving any
+        valid rows intact."""
         monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
         mock_response = MagicMock()
@@ -354,9 +357,32 @@ class TestLLMGraderGrade:
             expected_output="exp",
         )
 
+        assert mock_client.chat.completions.create.call_count == 2
         assert len(results) == 1
         assert results[0].passed is False
-        assert "LLM grading error" in results[0].evidence
+        assert results[0].skipped is True
+        assert "did not return" in results[0].evidence
+
+    def test_non_dict_response_treated_as_all_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content=json.dumps([1, 2, 3])))]
+
+        grader = LLMGrader()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        grader._client = mock_client
+
+        results = grader.grade(
+            assertions=["Assert 1"],
+            agent_output="out",
+            output_dir=tmp_path,
+            expected_output="exp",
+        )
+
+        assert len(results) == 1
+        assert results[0].skipped is True
 
 
 class TestLLMGraderFileListing:

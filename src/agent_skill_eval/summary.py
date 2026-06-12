@@ -41,7 +41,6 @@ def _token_totals(timings: list[dict]) -> dict:
     cached = sum(t.get("cached_tokens") or 0 for t in timings)
     output = sum(t.get("output_tokens") or 0 for t in timings)
     total = sum(t.get("total_tokens") or 0 for t in timings)
-    reported_input = max(input_tokens, cached)
     # Prefer the per-run value the harness recorded (it knows whether its
     # CLI's input_tokens include cache reads); fall back to the
     # subtraction lower bound only for timing.json files predating it.
@@ -51,6 +50,10 @@ def _token_totals(timings: list[dict]) -> dict:
         if nc is None:
             nc = max((t.get("input_tokens") or 0) - (t.get("cached_tokens") or 0), 0)
         non_cached += nc
+    # The cached share of everything the model read. non_cached + cached is
+    # the only denominator that works for both reporting styles (codex
+    # includes cache reads in input_tokens; claude-code/opencode do not).
+    all_input = non_cached + cached
     # None when no run reported reasoning telemetry: unknown, not zero.
     reasoning_known = [r for t in timings if (r := t.get("reasoning_output_tokens")) is not None]
     return {
@@ -60,7 +63,7 @@ def _token_totals(timings: list[dict]) -> dict:
         "output": output,
         "reasoning_output": sum(reasoning_known) if reasoning_known else None,
         "total": total,
-        "cached_pct": round(cached / reported_input, 4) if reported_input else 0.0,
+        "cached_pct": round(cached / all_input, 4) if all_input else 0.0,
     }
 
 

@@ -389,6 +389,18 @@ class TestCostSemantics:
         timing = TimingData(input_tokens=12481, cached_tokens=93184)
         assert OpenCodeHarness(tmp_path).non_cached_input_tokens(timing) == 12481
 
+    def test_summary_cached_pct_uses_non_cached_plus_cached(self):
+        from agent_skill_eval.summary import _token_totals
+
+        # claude/opencode style: input excludes cache reads, so the cached
+        # share is cached / (non_cached + cached), not the bogus 100% that
+        # cached / max(input, cached) produced.
+        totals = _token_totals(
+            [{"input_tokens": 100, "cached_tokens": 300, "non_cached_input_tokens": 100, "total_tokens": 110}]
+        )
+        assert totals["cached_pct"] == pytest.approx(0.75)
+        assert totals["non_cached_input"] == 100
+
     def test_compute_stats_cost_unavailable_when_no_run_reported(self):
         results = [
             {

@@ -804,13 +804,20 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
             temperature=0,
         )
         data = json.loads(response.choices[0].message.content)
+        if not isinstance(data, dict):
+            return [], assertions
         # Only keep results that answer a requested assertion, once each:
-        # judges sometimes return extra, duplicated, or unrelated rows, and
-        # on a retry that would double-count assertions already graded.
+        # judges sometimes return extra, duplicated, malformed, or unrelated
+        # rows. A bad row only loses that row — its assertion goes into
+        # ``missing`` for the retry instead of failing the whole attempt.
         requested = {_normalize_assertion_text(a) for a in assertions}
         results = []
         answered: set[str] = set()
-        for r in data.get("results", []):
+        raw_results = data.get("results")
+        for r in raw_results if isinstance(raw_results, list) else []:
+            malformed = not isinstance(r, dict) or not isinstance(r.get("text"), str) or "passed" not in r
+            if malformed or "evidence" not in r:
+                continue
             key = _normalize_assertion_text(r["text"])
             if key not in requested or key in answered:
                 continue
