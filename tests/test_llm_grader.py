@@ -227,6 +227,103 @@ class TestLLMGraderGrade:
         assert results[2].passed is False
         assert "did not return" in results[2].evidence
 
+    def test_dropped_assertion_recovered_by_retry(self, tmp_path, monkeypatch):
+        """One retry with only the dropped assertions turns a would-be skip
+        into a real verdict."""
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+
+        def response_with(results):
+            return MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps({"results": results})))])
+
+        first = response_with([{"text": "Assert 1", "passed": True, "evidence": "ok"}])
+        retry = response_with([{"text": "Assert 2", "passed": False, "evidence": "not found"}])
+
+        grader = LLMGrader()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [first, retry]
+        grader._client = mock_client
+
+        results = grader.grade(
+            assertions=["Assert 1", "Assert 2"],
+            agent_output="out",
+            output_dir=tmp_path,
+            expected_output="exp",
+        )
+
+        assert mock_client.chat.completions.create.call_count == 2
+        # The retry prompt only contains the dropped assertion.
+        retry_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs["messages"][0]["content"]
+        assert "Assert 2" in retry_prompt
+        assert "1. Assert 1" not in retry_prompt
+        assert len(results) == 2
+        by_text = {r.text: r for r in results}
+        assert by_text["Assert 1"].passed is True
+        assert by_text["Assert 2"].passed is False
+        assert not any(r.skipped for r in results)
+
+    def test_retry_does_not_duplicate_already_answered_assertions(self, tmp_path, monkeypatch):
+        """A retry that re-answers an already-graded assertion (or returns
+        unrelated rows) must not add duplicate results."""
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+
+        # Same response both times: answers Assert 1, never Assert 2.
+        mock_response = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(
+                        content=json.dumps({"results": [{"text": "Assert 1", "passed": True, "evidence": "ok"}]})
+                    )
+                )
+            ]
+        )
+
+        grader = LLMGrader()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+        grader._client = mock_client
+
+        results = grader.grade(
+            assertions=["Assert 1", "Assert 2"],
+            agent_output="out",
+            output_dir=tmp_path,
+            expected_output="exp",
+        )
+
+        assert mock_client.chat.completions.create.call_count == 2
+        assert len(results) == 2
+        assert [r.text for r in results] == ["Assert 1", "Assert 2"]
+        assert results[1].skipped is True
+
+    def test_retry_api_error_falls_back_to_skip(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+
+        first = MagicMock(
+            choices=[
+                MagicMock(
+                    message=MagicMock(
+                        content=json.dumps({"results": [{"text": "Assert 1", "passed": True, "evidence": "ok"}]})
+                    )
+                )
+            ]
+        )
+
+        grader = LLMGrader()
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [first, OpenAIError("boom")]
+        grader._client = mock_client
+
+        results = grader.grade(
+            assertions=["Assert 1", "Assert 2"],
+            agent_output="out",
+            output_dir=tmp_path,
+            expected_output="exp",
+        )
+
+        assert len(results) == 2
+        assert results[0].passed is True
+        assert results[1].skipped is True
+        assert "did not return" in results[1].evidence
+
     def test_missing_text_field_in_result(self, tmp_path, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
