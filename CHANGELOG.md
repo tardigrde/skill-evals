@@ -6,6 +6,36 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.6.1 (2026-06-12)
+
+### Bug Fixes
+
+- Opencode non-cached input semantics + LLM grader retry on dropped assertions
+  ([`f0939bc`](https://github.com/tardigrde/agent-skill-eval/commit/f0939bc2b6a314d9fa8d62084fe1b57ed4280974))
+
+OpenCode reports input_tokens excluding cache reads (live runs show cached consistently larger than
+  input), so the codex-style subtraction clamped non_cached_input_tokens to a bogus 0 and capped
+  cached_pct at 100%. Override the split like claude-code.
+
+The LLM judge intermittently drops an assertion from its JSON answer, which skipped the assertion
+  and failed strict e2e runs. Retry once with only the dropped assertions before skipping; matched
+  results are now also deduplicated and filtered to the requested assertions so a retry cannot
+  double-count.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+- Tolerate malformed judge rows, correct cached_pct denominator (review feedback)
+  ([`45b2677`](https://github.com/tardigrde/agent-skill-eval/commit/45b26777fb7466f3973a339e0496219d8ecd4778))
+
+A malformed individual result row (non-dict, missing keys, non-string text) now only loses that row
+  — its assertion goes to the retry instead of crashing the whole attempt and skipping everything.
+
+cached_pct now divides by non_cached + cached, the only denominator valid for both reporting styles;
+  cached / max(input, cached) showed a bogus 100% for claude-code/opencode.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+
 ## v0.6.0 (2026-06-12)
 
 ### Bug Fixes
