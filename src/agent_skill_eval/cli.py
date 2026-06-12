@@ -15,8 +15,11 @@ load_dotenv()
 
 from agent_skill_eval import __version__  # noqa: E402
 from agent_skill_eval.graders import LLMGrader, grade_assertions  # noqa: E402
-from agent_skill_eval.models import AgentType, CleanupManifest, EvalSuite  # noqa: E402
+from agent_skill_eval.hooks import HookError  # noqa: E402
+from agent_skill_eval.models import AgentType, BudgetConfig, CleanupManifest, EvalSuite  # noqa: E402
 from agent_skill_eval.runner import EvalRunner  # noqa: E402
+from agent_skill_eval.summary import build_summary_from_artifacts, load_summary  # noqa: E402
+from agent_skill_eval.summary import leaf_config_dirs as _leaf_config_dirs  # noqa: E402
 
 
 def _version_callback(value: bool) -> None:
@@ -84,11 +87,84 @@ def run(
         "(ANTHROPIC_BASE_URL for claude-code, OPENAI_BASE_URL for codex/opencode)",
     ),
     runs: int = typer.Option(1, "--runs", "-n", help="Number of runs per (eval, agent, config) for pass@k stats"),
+    reasoning_effort: Optional[str] = typer.Option(
+        None,
+        "--reasoning-effort",
+        help="Reasoning effort passed to agents that support it (codex: "
+        "model_reasoning_effort, e.g. minimal/low/medium/high/xhigh). Without it, "
+        "agents inherit their own local config. Recorded in run_meta.json.",
+    ),
     agent_timeout: Optional[int] = typer.Option(
         None, "--timeout", help="Per-run agent timeout in seconds (default 600, env ASE_AGENT_TIMEOUT)"
     ),
     agent_retries: Optional[int] = typer.Option(
         None, "--retries", help="Retries on agent timeout/non-zero exit (default 1, env ASE_AGENT_RETRIES)"
+    ),
+    eval_ids: list[str] = typer.Option(
+        [],
+        "--eval-id",
+        help="Only run the eval case with this id. Repeatable for multiple cases.",
+    ),
+    max_input_tokens_per_case: Optional[int] = typer.Option(
+        None, "--max-input-tokens-per-case", help="Budget: max input tokens per run (checked after the run)"
+    ),
+    max_non_cached_input_tokens_per_case: Optional[int] = typer.Option(
+        None,
+        "--max-non-cached-input-tokens-per-case",
+        help="Budget: max non-cached (billable-rate) input tokens per run (checked after the run)",
+    ),
+    max_output_tokens_per_case: Optional[int] = typer.Option(
+        None, "--max-output-tokens-per-case", help="Budget: max output tokens per run (checked after the run)"
+    ),
+    max_reasoning_tokens_per_case: Optional[int] = typer.Option(
+        None,
+        "--max-reasoning-tokens-per-case",
+        help="Budget: max reasoning output tokens per run; only enforced for "
+        "agents that report reasoning telemetry (checked after the run)",
+    ),
+    max_total_tokens_per_case: Optional[int] = typer.Option(
+        None, "--max-total-tokens-per-case", help="Budget: max total tokens per run (checked after the run)"
+    ),
+    max_cost_per_case: Optional[float] = typer.Option(
+        None, "--max-cost-per-case", help="Budget: max USD cost per run (needs a cost source; checked after the run)"
+    ),
+    max_duration_per_case: Optional[float] = typer.Option(
+        None,
+        "--max-duration-per-case",
+        help="Budget: max seconds per run including retries (post-run check; --timeout still kills mid-run)",
+    ),
+    budget_action: str = typer.Option(
+        "fail",
+        "--budget-action",
+        help="What a budget violation does: warn (print only), fail (failed 'budget' "
+        "assertion in grading), stop-suite (fail + skip runs not yet started)",
+    ),
+    pre_run_commands: list[str] = typer.Option(
+        [],
+        "--pre-run-command",
+        help="Shell command run once before any agent case (setup/preflight). "
+        "Non-zero exit aborts the suite before any model call. Repeatable. "
+        "Receives ASE_* run metadata env vars.",
+    ),
+    post_grade_commands: list[str] = typer.Option(
+        [],
+        "--post-grade-command",
+        help="Shell command run per case after grading (external side-effect grader). "
+        "stdout JSON [{text, passed, evidence}] is merged into grading.json; "
+        "non-zero exit adds a failed check. Repeatable. Receives ASE_* env vars.",
+    ),
+    post_run_commands: list[str] = typer.Option(
+        [],
+        "--post-run-command",
+        help="Shell command run once after the suite (teardown). Failures are "
+        "recorded in summary.json but don't fail the run. Repeatable.",
+    ),
+    pricing_config: Optional[Path] = typer.Option(
+        None,
+        "--pricing-config",
+        help="JSON file mapping model id -> {prompt, completion, input_cache_read, "
+        "input_cache_write} USD-per-token rates, used to compute cost_usd for "
+        "agents whose CLI reports no cost (e.g. codex)",
     ),
 ):
     """Run skill evaluations."""
@@ -124,24 +200,57 @@ def run(
             "Assertions that need LLM rubric grading will be SKIPPED (not failed).[/yellow]"
         )
 
-    runner = EvalRunner(
-        skill_path=skill,
-        evals_path=evals,
-        workspace_base=workspace,
-        agents=agent_types,
-        concurrency=concurrency,
-        with_baseline=baseline,
-        grader_model=grader_model,
-        grader_base_url=grader_base_url,
-        source_repo=source_repo,
-        agent_models=agent_model_map,
-        harness_base_url=harness_base_url,
-        agent_timeout=agent_timeout,
-        agent_max_retries=agent_retries,
-        runs=runs,
+    if budget_action not in ("warn", "fail", "stop-suite"):
+        console.print(f"[red]Unknown --budget-action: {budget_action}. Choose warn, fail, or stop-suite.[/red]")
+        raise typer.Exit(1)
+    budget = BudgetConfig(
+        max_input_tokens=max_input_tokens_per_case,
+        max_non_cached_input_tokens=max_non_cached_input_tokens_per_case,
+        max_output_tokens=max_output_tokens_per_case,
+        max_total_tokens=max_total_tokens_per_case,
+        max_reasoning_tokens=max_reasoning_tokens_per_case,
+        max_cost_usd=max_cost_per_case,
+        max_duration_seconds=max_duration_per_case,
+        action=budget_action,
     )
 
-    result_dir = runner.run(iteration)
+    pricing = _load_pricing_config(pricing_config)
+
+    try:
+        runner = EvalRunner(
+            skill_path=skill,
+            evals_path=evals,
+            workspace_base=workspace,
+            agents=agent_types,
+            concurrency=concurrency,
+            with_baseline=baseline,
+            grader_model=grader_model,
+            grader_base_url=grader_base_url,
+            source_repo=source_repo,
+            agent_models=agent_model_map,
+            harness_base_url=harness_base_url,
+            agent_timeout=agent_timeout,
+            agent_max_retries=agent_retries,
+            runs=runs,
+            eval_ids=eval_ids,
+            budget=budget,
+            pricing=pricing,
+            pre_run_commands=pre_run_commands,
+            post_grade_commands=post_grade_commands,
+            post_run_commands=post_run_commands,
+            reasoning_effort=reasoning_effort,
+        )
+    except ValueError as e:
+        # Unknown --eval-id, invalid evals.json, etc.: fail before any model call.
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        result_dir = runner.run(iteration)
+    except HookError as e:
+        console.print(f"[red]{e}[/red]")
+        console.print("[red]Suite aborted by pre-run hook; no agent was run.[/red]")
+        raise typer.Exit(1)
     console.print(f"\n[bold green]Done! Results in: {result_dir}[/bold green]")
 
     if auto_cleanup:
@@ -177,6 +286,28 @@ def _parse_agent_models(specs: list[str], agent_types: list[AgentType]) -> dict[
             for agent in agent_types:
                 mapping.setdefault(agent, spec.strip())
     return mapping
+
+
+def _load_pricing_config(path: Optional[Path]) -> dict[str, dict]:
+    """Load a ``--pricing-config`` file: ``{model_id: {rate_field: usd_per_token}}``.
+
+    Rate fields mirror OpenRouter's pricing schema: ``prompt``, ``completion``,
+    ``input_cache_read``, ``input_cache_write``.
+    """
+    if path is None:
+        return {}
+    if not path.exists():
+        console.print(f"[red]Pricing config not found: {path}[/red]")
+        raise typer.Exit(1)
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON in pricing config {path}: {e}[/red]")
+        raise typer.Exit(1)
+    if not isinstance(data, dict) or not all(isinstance(v, dict) for v in data.values()):
+        console.print(f"[red]Pricing config {path} must map model ids to rate objects[/red]")
+        raise typer.Exit(1)
+    return data
 
 
 def _cleanup_iteration(iteration_dir: Path, workspace_base: Path) -> None:
@@ -419,24 +550,6 @@ def grade(
     console.print(f"[green]Re-grading complete! Updated {updated} grading file(s).[/green]")
 
 
-def _leaf_config_dirs(agent_dir: Path) -> list[Path]:
-    """Yield config dirs that directly contain run artifacts.
-
-    Layouts: ``agent/with_skill/outputs`` (single run) or
-    ``agent/with_skill/run-N/outputs`` (``--runs N`` > 1).
-    """
-    leaves: list[Path] = []
-    for config_dir in sorted(agent_dir.iterdir()):
-        if not config_dir.is_dir():
-            continue
-        run_dirs = sorted(p for p in config_dir.glob("run-*") if p.is_dir())
-        if run_dirs:
-            leaves.extend(run_dirs)
-        else:
-            leaves.append(config_dir)
-    return leaves
-
-
 def _collect_results(workspace: Path) -> dict[str, dict]:
     """Reconstruct per-run results for benchmark recompute.
 
@@ -498,8 +611,10 @@ def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str, str]
         pass_rate = stats.get("pass_rate", {})
         time_s = stats.get("time_seconds", {})
         tokens = stats.get("tokens", {})
-        # benchmark.json from runs before cost stats existed lacks the field.
-        cost = stats.get("cost_usd") or {}
+        # None/absent means cost is unavailable for these runs (e.g. codex
+        # without --pricing-config), which is different from a real $0.
+        cost = stats.get("cost_usd")
+        cost_str = f"{cost.get('mean', 0):.4f} +/- {cost.get('stddev', 0):.4f}" if cost else "n/a"
         k = stats.get("k", 1)
         pass_at_k = f"{stats.get('pass_at_k', 0):.0%} (k={k})" if k > 1 else f"{stats.get('full_pass_rate', 0):.0%}"
         rows.append(
@@ -509,10 +624,20 @@ def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str, str]
                 pass_at_k,
                 f"{time_s.get('mean', 0):.1f} +/- {time_s.get('stddev', 0):.1f}",
                 f"{tokens.get('mean', 0):.0f} +/- {tokens.get('stddev', 0):.0f}",
-                f"{cost.get('mean', 0):.4f} +/- {cost.get('stddev', 0):.4f}",
+                cost_str,
             )
         )
     return rows
+
+
+def _delta_line(delta: dict) -> str:
+    cost = delta.get("cost_usd")
+    cost_str = f"{cost:+.4f} USD" if cost is not None else "n/a"
+    return (
+        f"pass rate {delta.get('pass_rate', 0):+.1%}, "
+        f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}, "
+        f"cost {cost_str}"
+    )
 
 
 def _benchmark_deltas(benchmark: dict) -> dict[str, dict]:
@@ -535,11 +660,7 @@ def _print_markdown_report(iter_name: str, benchmark: dict) -> None:
     if deltas:
         print("\n**Delta (with_skill - without_skill):**\n")
         for agent, delta in deltas.items():
-            print(
-                f"- `{agent}`: pass rate {delta.get('pass_rate', 0):+.1%}, "
-                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}, "
-                f"cost {delta.get('cost_usd', 0):+.4f} USD"
-            )
+            print(f"- `{agent}`: {_delta_line(delta)}")
 
 
 def _print_table_report(iter_name: str, benchmark: dict) -> None:
@@ -557,19 +678,12 @@ def _print_table_report(iter_name: str, benchmark: dict) -> None:
     if deltas:
         console.print("\n[bold]Delta (with_skill - without_skill):[/bold]")
         for agent, delta in deltas.items():
-            console.print(
-                f"  {agent}: pass rate {delta.get('pass_rate', 0):+.1%}, "
-                f"time {delta.get('time_seconds', 0):+.1f}s, tokens {delta.get('tokens', 0):+.0f}, "
-                f"cost {delta.get('cost_usd', 0):+.4f} USD"
-            )
+            console.print(f"  {agent}: {_delta_line(delta)}")
 
 
-def _print_eval_details(iter_dir: Path, show_evidence: bool, markdown: bool) -> None:
+def _print_eval_details(iter_dir: Path, show_evidence: bool, markdown: bool, failures_only: bool = False) -> None:
     for eval_dir in sorted(iter_dir.glob("eval-*")):
-        if markdown:
-            print(f"\n#### {eval_dir.name}\n")
-        else:
-            console.print(f"\n[bold]{eval_dir.name}[/bold]")
+        header_printed = False
         for agent_dir in sorted(eval_dir.iterdir()):
             if not agent_dir.is_dir():
                 continue
@@ -580,6 +694,14 @@ def _print_eval_details(iter_dir: Path, show_evidence: bool, markdown: bool) -> 
                 with open(grading_path, encoding="utf-8") as f:
                     grading = json.load(f)
                 summary = grading.get("summary", {})
+                if failures_only and summary.get("failed", 0) == 0:
+                    continue
+                if not header_printed:
+                    if markdown:
+                        print(f"\n#### {eval_dir.name}\n")
+                    else:
+                        console.print(f"\n[bold]{eval_dir.name}[/bold]")
+                    header_printed = True
                 label = f"{agent_dir.name}/{config_dir.relative_to(agent_dir)}"
                 skipped = summary.get("skipped", 0)
                 skipped_note = f", {skipped} skipped" if skipped else ""
@@ -611,6 +733,9 @@ def report(
     fmt: str = typer.Option("table", "--format", "-f", help="Output format: table or markdown"),
     show_evidence: bool = typer.Option(
         False, "--show-evidence", help="Show evidence for failed/skipped assertions from grading.json"
+    ),
+    failures_only: bool = typer.Option(
+        False, "--failures-only", help="Only list runs that had at least one failed assertion"
     ),
 ):
     """Display a summary report of eval results."""
@@ -645,7 +770,7 @@ def report(
         else:
             _print_table_report(iter_dir.name, benchmark)
 
-        _print_eval_details(iter_dir, show_evidence, markdown)
+        _print_eval_details(iter_dir, show_evidence, markdown, failures_only=failures_only)
 
 
 @app.command()
@@ -668,26 +793,158 @@ def compare(
     summary_b = benchmarks[iteration_b].get("run_summary", {})
     configs = sorted(set(summary_a) | set(summary_b))
 
+    def _mean(summary: dict, config: str, field: str):
+        return (summary.get(config, {}).get(field) or {}).get("mean")
+
+    def _change(a, b, fmt: str) -> str:
+        return format(b - a, fmt) if a is not None and b is not None else "-"
+
     table = Table(title=f"iteration-{iteration_a} vs iteration-{iteration_b}")
     table.add_column("Configuration", style="cyan")
     table.add_column(f"Pass Rate (it-{iteration_a})", style="green")
     table.add_column(f"Pass Rate (it-{iteration_b})", style="green")
     table.add_column("Change", style="magenta")
+    table.add_column("Time Δ (s)", style="yellow")
+    table.add_column("Tokens Δ", style="blue")
 
     for config in configs:
-        a = summary_a.get(config, {}).get("pass_rate", {}).get("mean")
-        b = summary_b.get(config, {}).get("pass_rate", {}).get("mean")
+        a = _mean(summary_a, config, "pass_rate")
+        b = _mean(summary_b, config, "pass_rate")
         a_str = f"{a:.1%}" if a is not None else "-"
         b_str = f"{b:.1%}" if b is not None else "-"
-        change = f"{b - a:+.1%}" if a is not None and b is not None else "-"
-        table.add_row(config, a_str, b_str, change)
+        table.add_row(
+            config,
+            a_str,
+            b_str,
+            _change(a, b, "+.1%"),
+            _change(_mean(summary_a, config, "time_seconds"), _mean(summary_b, config, "time_seconds"), "+.1f"),
+            _change(_mean(summary_a, config, "tokens"), _mean(summary_b, config, "tokens"), "+.0f"),
+        )
 
     console.print(table)
 
 
 @app.command()
+def status(
+    workspace: Path = typer.Option(..., "--workspace", "-w", help="Path to workspace containing iteration dirs"),
+    iteration: Optional[int] = typer.Option(None, "--iteration", "-i", help="Iteration to show (default: latest)"),
+):
+    """Show the latest run's summary (pass rate, failures, tokens, cost, cleanup) without any model call.
+
+    Reads the iteration's ``summary.json``; for runs that predate it, a
+    reduced summary is rebuilt from the saved artifacts.
+    """
+    if not workspace.exists():
+        console.print(f"[red]Workspace not found: {workspace}[/red]")
+        raise typer.Exit(1)
+
+    if iteration is not None:
+        iter_dir = workspace / f"iteration-{iteration}"
+        if not iter_dir.exists():
+            console.print(f"[red]Iteration directory not found: {iter_dir}[/red]")
+            raise typer.Exit(1)
+    else:
+        iteration_dirs = sorted(
+            (p for p in workspace.glob("iteration-*") if p.is_dir()),
+            key=lambda p: int(p.name[len("iteration-") :]) if p.name[len("iteration-") :].isdigit() else -1,
+        )
+        if not iteration_dirs:
+            console.print(f"[yellow]No iterations found under {workspace}[/yellow]")
+            raise typer.Exit(1)
+        iter_dir = iteration_dirs[-1]
+
+    summary = load_summary(iter_dir)
+    if summary is None:
+        summary = build_summary_from_artifacts(iter_dir)
+        if summary is None:
+            console.print(f"[red]No summary.json and no readable artifacts in {iter_dir}[/red]")
+            raise typer.Exit(1)
+        console.print("[yellow]No summary.json (run predates it); rebuilt a reduced summary from artifacts.[/yellow]")
+
+    console.print(f"\n[bold]{iter_dir}[/bold]")
+    console.print(
+        f"skill={summary.get('skill_name')} iteration={summary.get('iteration')} "
+        f"agents={','.join(summary.get('agents', []))} "
+        f"eval_ids={','.join(str(e) for e in summary.get('eval_ids', []))}"
+    )
+    console.print(
+        f"runs: {summary.get('runs_completed', 0)} completed, "
+        f"{summary.get('runs_failed_grading', 0)} with failed assertions, "
+        f"{len(summary.get('errors', []))} errored, "
+        f"{len(summary.get('skipped_runs', []))} skipped; "
+        f"duration {summary.get('duration_seconds', 0):.0f}s"
+    )
+
+    pass_rates = summary.get("pass_rates") or {}
+    if pass_rates:
+        table = Table(title="Pass rates")
+        table.add_column("Configuration", style="cyan")
+        table.add_column("Pass rate", style="green")
+        for config, rate in pass_rates.items():
+            table.add_row(config, f"{rate:.1%}" if rate is not None else "-")
+        console.print(table)
+
+    tokens = summary.get("tokens") or {}
+    if tokens:
+        reasoning = tokens.get("reasoning_output")
+        reasoning_str = f" (reasoning={reasoning:,})" if reasoning is not None else ""
+        console.print(
+            f"tokens: input={tokens.get('input', 0):,} "
+            f"(cached={tokens.get('cached', 0):,}, {tokens.get('cached_pct', 0):.0%}; "
+            f"non-cached={tokens.get('non_cached_input', 0):,}) "
+            f"output={tokens.get('output', 0):,}{reasoning_str} total={tokens.get('total', 0):,}"
+        )
+    cost = summary.get("cost") or {}
+    total_cost = cost.get("total_usd")
+    cost_str = f"{total_cost:.4f} USD" if total_cost is not None else "unavailable"
+    console.print(f"cost: {cost_str} ({cost.get('runs_with_cost', 0)}/{cost.get('runs_total', 0)} runs reported cost)")
+
+    for failed in summary.get("failed_runs", []):
+        config = "with_skill" if failed.get("with_skill") else "without_skill"
+        console.print(
+            f"  [red]FAILED {failed.get('eval_id')}/{failed.get('agent')}/{config}: "
+            f"{', '.join(failed.get('failed_assertions', [])) or 'see grading.json'}[/red]"
+        )
+    for skipped in summary.get("skipped_runs", []):
+        console.print(f"  [yellow]SKIPPED {skipped.get('run')}: {skipped.get('reason')}[/yellow]")
+    for error in summary.get("errors", []):
+        console.print(f"  [red]ERROR {error.get('run')}: {error.get('error')}[/red]")
+
+    budget = summary.get("budget") or {}
+    for exceeded in budget.get("exceeded_runs", []):
+        config = "with_skill" if exceeded.get("with_skill") else "without_skill"
+        console.print(
+            f"  [yellow]BUDGET {exceeded.get('eval_id')}/{exceeded.get('agent')}/{config}: "
+            f"{exceeded.get('reason')}[/yellow]"
+        )
+
+    cleanup_info = summary.get("cleanup") or {}
+    branches = cleanup_info.get("remote_branches", [])
+    prs = cleanup_info.get("pr_numbers", [])
+    if branches or prs:
+        console.print(
+            f"[yellow]side effects recorded: {len(branches)} remote branch(es), {len(prs)} PR(s) — "
+            f"run 'agent-skill-eval cleanup' to remove them[/yellow]"
+        )
+    else:
+        console.print("side effects recorded: none")
+
+    hooks_info = summary.get("hooks") or {}
+    for stage, records in hooks_info.items():
+        failures = [r for r in records if r.get("exit_code") != 0]
+        state = f"[red]{len(failures)} failed[/red]" if failures else "ok"
+        console.print(f"hooks ({stage}): {len(records)} ran, {state}")
+
+
+@app.command()
 def validate(
     evals: Path = typer.Argument(..., help="Path to an evals.json file to validate"),
+    eval_ids: list[str] = typer.Option(
+        [],
+        "--eval-id",
+        help="Only validate the eval case with this id. Repeatable. "
+        "Pairs with 'run --eval-id' for a cheap targeted inner loop.",
+    ),
 ):
     """Validate an evals.json file against the eval suite schema."""
     if not evals.exists():
@@ -706,6 +963,21 @@ def validate(
         console.print(f"[red]Schema validation failed:[/red]\n{e}")
         raise typer.Exit(1)
 
+    # Duplicate ids are checked over the FULL suite (filtering by a
+    # duplicated id must not hide the duplication), then the file/assertion
+    # checks run on the selected subset only.
+    ids = [str(e.id) for e in suite.evals]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        console.print(f"[red]Duplicate eval ids: {duplicates}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        suite = suite.filtered_by_ids(eval_ids)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
     missing_files = []
     for eval_case in suite.evals:
         for file_path in eval_case.files:
@@ -715,12 +987,6 @@ def validate(
         console.print("[red]Referenced fixture files not found:[/red]")
         for m in missing_files:
             console.print(f"  - {m}")
-        raise typer.Exit(1)
-
-    ids = [str(e.id) for e in suite.evals]
-    duplicates = sorted({i for i in ids if ids.count(i) > 1})
-    if duplicates:
-        console.print(f"[red]Duplicate eval ids: {duplicates}[/red]")
         raise typer.Exit(1)
 
     from agent_skill_eval.graders import classify_assertion
@@ -733,7 +999,8 @@ def validate(
             if classify_assertion(assertion) == "llm":
                 llm_assertions.append((str(eval_case.id), assertion))
 
-    console.print(f"[green]Valid: {len(suite.evals)} eval(s) for skill '{suite.skill_name}'[/green]")
+    selected = " (selected by --eval-id)" if eval_ids else ""
+    console.print(f"[green]Valid: {len(suite.evals)} eval(s) for skill '{suite.skill_name}'{selected}[/green]")
     if llm_assertions:
         console.print(
             f"[yellow]{len(llm_assertions)}/{total_assertions} assertion(s) match no deterministic "
